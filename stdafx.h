@@ -8,8 +8,14 @@
 #include "targetver.h"
 
 #include <stdio.h>
+#include <windows.h>
 #include <tchar.h>
-
+#include <stdint.h>
+#include <vector>
+#include <map>
+#define BEATS_PLATFORM_WIN32 1
+#define BEATS_PLATFORM BEATS_PLATFORM_WIN32
+#include "PublicDef.h"
 
 
 // TODO: reference additional headers your program requires here
