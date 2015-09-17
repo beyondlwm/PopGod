@@ -124,9 +124,8 @@ void ParseTextFile(iconv_t fd, const std::string& strFilePath, std::map<uint32_t
     }
 }
 
-void ConvertTx2FileToBmp(const char* pszFilePath)
+void ConvertTx2FileToBmp(CSerializer& tx2file, const std::string& outputFileName)
 {
-    CSerializer tx2file(pszFilePath, "rb");
     short tx2Width, tx2Height;
     tx2file >> tx2Width >> tx2Height;
     short tx2bit;
@@ -153,11 +152,13 @@ void ConvertTx2FileToBmp(const char* pszFilePath)
     bmpFile << header;
     bmpFile << info;
 
-    int txHeaderSize = tx2file.GetWritePos() - 1024 - tx2Height * tx2Width;
-    BEATS_ASSERT(txHeaderSize == 16);
-    tx2file.SetReadPos(txHeaderSize);
+    //int txHeaderSize = tx2file.GetWritePos() - 1024 - tx2Height * tx2Width;
+    //BEATS_ASSERT(txHeaderSize == 16);
+    tx2file.SetReadPos(tx2file.GetReadPos() + 10); // Skip tx2 header, we've already read another 6 bytes before.
     for (size_t i = 0; i < 1024;)
     {
+        int readPos = tx2file.GetReadPos();
+        readPos = readPos;
         unsigned char* pDataReader = (unsigned char*)tx2file.GetReadPtr();
         unsigned char& alphaChannel = pDataReader[3];
         if (alphaChannel >= 0x80)
@@ -173,13 +174,69 @@ void ConvertTx2FileToBmp(const char* pszFilePath)
         pDataReader[2] = (unsigned char)(pDataReader[2] * (float)alphaChannel / 0xFF);
         bmpFile << pDataReader[2] << pDataReader[1] << pDataReader[0] << pDataReader[3]; //switch BGRA to RGBA.
         i += 4;
-        tx2file.SetReadPos(tx2file.GetReadPos() + 4);
+        uint32_t uRGBA = 0;
+        tx2file >> uRGBA;
+        uRGBA = 0;
     }
     bmpFile.Serialize(tx2file);
     bmpFile.SetReadPos(0);
-    std::string strfile = pszFilePath;
-    strfile.append("_bmp");
-    bmpFile.Deserialize(strfile.c_str());
+    bmpFile.Deserialize(outputFileName.c_str());
+}
+
+void ConvertDataFileToBmp(const char* pszDataPath)
+{
+    CSerializer datafile(pszDataPath, "rb");
+    uint32_t uPalletOffset;
+    datafile >> uPalletOffset;
+    uint32_t uFileCount;
+    datafile >> uFileCount;
+    std::map<uint32_t, uint32_t> fileStruct;
+    for (size_t i = 0; i < uFileCount; ++i)
+    {
+        uint32_t uUnknownData = 0;
+        datafile >> uUnknownData;
+        uint32_t txFileDataOffset = 0;
+        datafile >> txFileDataOffset;
+        BEATS_ASSERT(fileStruct.find(txFileDataOffset) == fileStruct.end());
+        fileStruct[txFileDataOffset] = uUnknownData;
+    }
+    BEATS_ASSERT(datafile.GetReadPos() == uPalletOffset);
+    for (auto iter = fileStruct.begin(); iter != fileStruct.end(); ++iter)
+    {
+        datafile.SetReadPos(iter->first);
+        TCHAR szBuffer[256];
+        _stprintf(szBuffer, "C:/datapic/test_%d.bmp", iter->second);
+        ConvertTx2FileToBmp(datafile, szBuffer);
+    }
+    BEATS_PRINT("readpos:0x%p", datafile.GetReadPos());
+}
+
+void ConvertFontToBmp(CSerializer& fontFile, const std::string& outputFileName)
+{
+    uint32_t tx2Height = -24;
+    uint32_t tx2Width = 24;
+    BITMAPFILEHEADER header;
+    memset(&header, 0, sizeof(header));
+    header.bfType = 19778;
+    header.bfOffBits = 1078;
+    header.bfSize = header.bfOffBits + tx2Height * tx2Width;
+
+    BITMAPINFOHEADER info;
+    memset(&info, 0, sizeof(info));
+    info.biBitCount = 8;
+    info.biPlanes = 1;
+    info.biWidth = tx2Width;
+    info.biHeight = tx2Height;
+    info.biSize = 40;
+    info.biClrUsed = 256;
+    info.biSizeImage = (info.biWidth * info.biBitCount + 31) / 32 * 4 * tx2Height;
+
+    CSerializer bmpFile;
+    bmpFile << header;
+    bmpFile << info;
+    fontFile.SetReadPos(fontFile.GetReadPos() + 16);
+    bmpFile.Serialize(fontFile, 1024);
+
 }
 
 int _tmain(int argc, _TCHAR* argv[])
