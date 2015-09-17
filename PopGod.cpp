@@ -124,6 +124,64 @@ void ParseTextFile(iconv_t fd, const std::string& strFilePath, std::map<uint32_t
     }
 }
 
+void ConvertTx2FileToBmp(const char* pszFilePath)
+{
+    CSerializer tx2file(pszFilePath, "rb");
+    short tx2Width, tx2Height;
+    tx2file >> tx2Width >> tx2Height;
+    short tx2bit;
+    tx2file >> tx2bit;
+    BEATS_ASSERT(tx2bit == 256);
+
+    BITMAPFILEHEADER header;
+    memset(&header, 0, sizeof(header));
+    header.bfType = 19778;
+    header.bfOffBits = 1078;
+    header.bfSize = header.bfOffBits + tx2Height * tx2Width;
+
+    BITMAPINFOHEADER info;
+    memset(&info, 0, sizeof(info));
+    info.biBitCount = 8;
+    info.biPlanes = 1;
+    info.biWidth = tx2Width;
+    info.biHeight = -tx2Height;
+    info.biSize = 40;
+    info.biClrUsed = 256;
+    info.biSizeImage = (info.biWidth * info.biBitCount + 31) / 32 * 4 * tx2Height;
+
+    CSerializer bmpFile;
+    bmpFile << header;
+    bmpFile << info;
+
+    int txHeaderSize = tx2file.GetWritePos() - 1024 - tx2Height * tx2Width;
+    BEATS_ASSERT(txHeaderSize == 16);
+    tx2file.SetReadPos(txHeaderSize);
+    for (size_t i = 0; i < 1024;)
+    {
+        unsigned char* pDataReader = (unsigned char*)tx2file.GetReadPtr();
+        unsigned char& alphaChannel = pDataReader[3];
+        if (alphaChannel >= 0x80)
+        {
+            alphaChannel = 0xFF;
+        }
+        else
+        {
+            alphaChannel *= 2;
+        }
+        pDataReader[0] = (unsigned char)(pDataReader[0] * (float)alphaChannel / 0xFF);
+        pDataReader[1] = (unsigned char)(pDataReader[1] * (float)alphaChannel / 0xFF);
+        pDataReader[2] = (unsigned char)(pDataReader[2] * (float)alphaChannel / 0xFF);
+        bmpFile << pDataReader[2] << pDataReader[1] << pDataReader[0] << pDataReader[3]; //switch BGRA to RGBA.
+        i += 4;
+        tx2file.SetReadPos(tx2file.GetReadPos() + 4);
+    }
+    bmpFile.Serialize(tx2file);
+    bmpFile.SetReadPos(0);
+    std::string strfile = pszFilePath;
+    strfile.append("_bmp");
+    bmpFile.Deserialize(strfile.c_str());
+}
+
 int _tmain(int argc, _TCHAR* argv[])
 {
     iconv_t fd = iconv_open("SHIFT_JIS", "");
