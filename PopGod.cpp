@@ -213,8 +213,8 @@ void ConvertDataFileToBmp(const char* pszDataPath)
 
 void ConvertFontToBmp(CSerializer& fontFile, const std::string& outputFileName)
 {
-    uint32_t tx2Height = -24;
-    uint32_t tx2Width = 24;
+    int tx2Height = -24 * 80;
+    int tx2Width = 24 * 30;
     BITMAPFILEHEADER header;
     memset(&header, 0, sizeof(header));
     header.bfType = 19778;
@@ -234,9 +234,44 @@ void ConvertFontToBmp(CSerializer& fontFile, const std::string& outputFileName)
     CSerializer bmpFile;
     bmpFile << header;
     bmpFile << info;
-    fontFile.SetReadPos(fontFile.GetReadPos() + 16);
-    bmpFile.Serialize(fontFile, 1024);
+    fontFile.SetReadPos(16);
+    //bmpFile.Serialize(fontFile, 1024);
+    for (size_t i = 0; i < 1024;)
+    {
+        int readPos = fontFile.GetReadPos();
+        readPos = readPos;
+        unsigned char* pDataReader = (unsigned char*)fontFile.GetReadPtr();
+        unsigned char& alphaChannel = pDataReader[3];
+        pDataReader[0] = (unsigned char)(pDataReader[0] * (float)alphaChannel / 0xFF);
+        pDataReader[1] = (unsigned char)(pDataReader[1] * (float)alphaChannel / 0xFF);
+        pDataReader[2] = (unsigned char)(pDataReader[2] * (float)alphaChannel / 0xFF);
+        bmpFile << pDataReader[0] << pDataReader[1] << pDataReader[2] << pDataReader[3]; //switch BGRA to RGBA.
+        i += 4;
+        uint32_t uRGBA = 0;
+        fontFile >> uRGBA;
+        uRGBA = 0;
+    }
+    for (int row = 0; row < 80; ++row)// row for font character count
+    {
+        for (int ip = 0; ip < 24; ++ip)
+        {
+            for (int col = 0; col < 30; ++col) //col for font character count
+            {
+                uint32_t uOffset = (row * 30 + col) * 288 + ip * 12;
+                fontFile.SetReadPos(uOffset + 0x410);
+                for (int jp = 0; jp < 12; ++jp)
+                {
+                    unsigned char _4ppdata;
+                    fontFile >> _4ppdata;
+                    unsigned char high = _4ppdata >> 4;
+                    unsigned char low = _4ppdata & 0x0F;
+                    bmpFile << low << high;
+                }
+            }
 
+        }
+    }
+    bmpFile.Deserialize(outputFileName.c_str());
 }
 
 int _tmain(int argc, _TCHAR* argv[])
