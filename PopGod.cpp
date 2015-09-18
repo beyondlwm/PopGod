@@ -1,8 +1,10 @@
 #include "stdafx.h"
 #include "Serializer.h"
 #include "StringHelper.h"
+#include "UtilityManager.h"
 #include "iconv.h"
 #include <algorithm>
+#include <shlwapi.h>
 
 struct STranslateRecord
 {
@@ -124,6 +126,70 @@ void ParseTextFile(iconv_t fd, const std::string& strFilePath, std::map<uint32_t
     }
 }
 
+void ConvertPalletDataFromGimToBMP(CSerializer& serializer, CSerializer& out)
+{
+    for (size_t i = 0; i < 1024;)
+    {
+        unsigned char R, G, B, A;
+        serializer >> R >> G >> B >> A;
+        if (A >= 0x80)
+        {
+            A = 0xFF;
+        }
+        else
+        {
+            A *= 2;
+        }
+        R = (unsigned char)(R * (float)A / 0xFF);
+        G = (unsigned char)(G * (float)A / 0xFF);
+        B = (unsigned char)(B * (float)A / 0xFF);
+        out << B << G << R << A; //switch BGRA to RGBA.
+        i += 4;
+    }
+}
+
+void ExportPallet(CSerializer& serializer, const std::string& strOutputFileName)
+{
+    CSerializer palletData;
+    int32_t uWidth = 256;
+    int32_t uHeight = -256;
+    BITMAPFILEHEADER header;
+    memset(&header, 0, sizeof(header));
+    header.bfType = 19778;
+    header.bfOffBits = 1078;
+    header.bfSize = header.bfOffBits + uWidth * uHeight;
+
+    BITMAPINFOHEADER info;
+    memset(&info, 0, sizeof(info));
+    info.biBitCount = 8;
+    info.biPlanes = 1;
+    info.biWidth = uWidth;
+    info.biHeight = uHeight;
+    info.biSize = 40;
+    info.biClrUsed = 256;
+    info.biSizeImage = (info.biWidth * info.biBitCount + 31) / 32 * 4 * info.biHeight;
+
+    palletData << header << info;
+
+    ConvertPalletDataFromGimToBMP(serializer, palletData);
+    for (int row = 0; row < 16; ++row)
+    {
+        for (int rowScan = 0; rowScan < 16; ++rowScan)
+        {
+            for (int col = 0; col < 16; ++col)
+            {
+                for (int k = 0; k < 16; ++k)
+                {
+                    BEATS_ASSERT(row * 16 + col <= 0xFF);
+                    palletData << (unsigned char)(row * 16 + col);
+                }
+            }
+        }
+    }
+    BEATS_ASSERT(palletData.GetWritePos() == 1078 + 256 * 256);
+    palletData.Deserialize(strOutputFileName.c_str());
+}
+
 void ConvertTx2FileToBmp(CSerializer& tx2file, const std::string& outputFileName)
 {
     short tx2Width, tx2Height;
@@ -154,30 +220,11 @@ void ConvertTx2FileToBmp(CSerializer& tx2file, const std::string& outputFileName
 
     //int txHeaderSize = tx2file.GetWritePos() - 1024 - tx2Height * tx2Width;
     //BEATS_ASSERT(txHeaderSize == 16);
-    tx2file.SetReadPos(tx2file.GetReadPos() + 10); // Skip tx2 header, we've already read another 6 bytes before.
-    for (size_t i = 0; i < 1024;)
-    {
-        int readPos = tx2file.GetReadPos();
-        readPos = readPos;
-        unsigned char* pDataReader = (unsigned char*)tx2file.GetReadPtr();
-        unsigned char& alphaChannel = pDataReader[3];
-        if (alphaChannel >= 0x80)
-        {
-            alphaChannel = 0xFF;
-        }
-        else
-        {
-            alphaChannel *= 2;
-        }
-        pDataReader[0] = (unsigned char)(pDataReader[0] * (float)alphaChannel / 0xFF);
-        pDataReader[1] = (unsigned char)(pDataReader[1] * (float)alphaChannel / 0xFF);
-        pDataReader[2] = (unsigned char)(pDataReader[2] * (float)alphaChannel / 0xFF);
-        bmpFile << pDataReader[2] << pDataReader[1] << pDataReader[0] << pDataReader[3]; //switch BGRA to RGBA.
-        i += 4;
-        uint32_t uRGBA = 0;
-        tx2file >> uRGBA;
-        uRGBA = 0;
-    }
+    uint32_t uPosBeforePallet = tx2file.GetReadPos() + 10;
+    tx2file.SetReadPos(uPosBeforePallet); // Skip tx2 header, we've already read another 6 bytes before.
+    ExportPallet(tx2file, outputFileName + ".pallet.bmp");
+    tx2file.SetReadPos(uPosBeforePallet); // Restore
+    ConvertPalletDataFromGimToBMP(tx2file, bmpFile);
     bmpFile.Serialize(tx2file);
     bmpFile.SetReadPos(0);
     bmpFile.Deserialize(outputFileName.c_str());
@@ -185,6 +232,9 @@ void ConvertTx2FileToBmp(CSerializer& tx2file, const std::string& outputFileName
 
 void ConvertDataFileToBmp(const char* pszDataPath)
 {
+    std::string strDirectoryPath = pszDataPath;
+    strDirectoryPath.append("_dir");
+    CreateDirectory(strDirectoryPath.c_str(), nullptr);
     CSerializer datafile(pszDataPath, "rb");
     uint32_t uPalletOffset;
     datafile >> uPalletOffset;
@@ -200,15 +250,18 @@ void ConvertDataFileToBmp(const char* pszDataPath)
         BEATS_ASSERT(fileStruct.find(txFileDataOffset) == fileStruct.end());
         fileStruct[txFileDataOffset] = uUnknownData;
     }
-    BEATS_ASSERT(datafile.GetReadPos() == uPalletOffset);
+    BEATS_ASSERT(datafile.GetReadPos() == uPalletOffset || uPalletOffset - datafile.GetReadPos() == 8); // Sometimes it needs align
+    if (datafile.GetReadPos() != uPalletOffset)
+    {
+        datafile.SetReadPos(uPalletOffset);
+    }
     for (auto iter = fileStruct.begin(); iter != fileStruct.end(); ++iter)
     {
         datafile.SetReadPos(iter->first);
         TCHAR szBuffer[256];
-        _stprintf(szBuffer, "C:/datapic/test_%d.bmp", iter->second);
+        _stprintf(szBuffer, "%s/%d.bmp", strDirectoryPath.c_str(),iter->second);
         ConvertTx2FileToBmp(datafile, szBuffer);
     }
-    BEATS_PRINT("readpos:0x%p", datafile.GetReadPos());
 }
 
 void ConvertFontToBmp(CSerializer& fontFile, const std::string& outputFileName)
@@ -235,22 +288,11 @@ void ConvertFontToBmp(CSerializer& fontFile, const std::string& outputFileName)
     bmpFile << header;
     bmpFile << info;
     fontFile.SetReadPos(16);
-    //bmpFile.Serialize(fontFile, 1024);
-    for (size_t i = 0; i < 1024;)
-    {
-        int readPos = fontFile.GetReadPos();
-        readPos = readPos;
-        unsigned char* pDataReader = (unsigned char*)fontFile.GetReadPtr();
-        unsigned char& alphaChannel = pDataReader[3];
-        pDataReader[0] = (unsigned char)(pDataReader[0] * (float)alphaChannel / 0xFF);
-        pDataReader[1] = (unsigned char)(pDataReader[1] * (float)alphaChannel / 0xFF);
-        pDataReader[2] = (unsigned char)(pDataReader[2] * (float)alphaChannel / 0xFF);
-        bmpFile << pDataReader[0] << pDataReader[1] << pDataReader[2] << pDataReader[3]; //switch BGRA to RGBA.
-        i += 4;
-        uint32_t uRGBA = 0;
-        fontFile >> uRGBA;
-        uRGBA = 0;
-    }
+    ConvertPalletDataFromGimToBMP(fontFile, bmpFile);
+    fontFile.SetReadPos(16);
+    std::string palletFileName = outputFileName;
+    palletFileName.append("_pallet.bmp");
+    ExportPallet(fontFile, palletFileName);
     for (int row = 0; row < 80; ++row)// row for font character count
     {
         for (int ip = 0; ip < 24; ++ip)
@@ -272,6 +314,92 @@ void ConvertFontToBmp(CSerializer& fontFile, const std::string& outputFileName)
         }
     }
     bmpFile.Deserialize(outputFileName.c_str());
+}
+
+void HandleDirectory(const SDirectory* directory)
+{
+    for (size_t i = 0; i < directory->m_pFileList->size(); ++i)
+    {
+        TFileData* pCurrFile = directory->m_pFileList->at(i);
+        std::string extension = PathFindExtension(pCurrFile->cFileName);
+        std::string filePath = directory->m_szPath;
+        filePath.append("\\").append(pCurrFile->cFileName);
+        if (_tcsicmp(extension.c_str(), ".tx2") == 0)
+        {
+            CSerializer tx2File(filePath.c_str());
+            ConvertTx2FileToBmp(tx2File, filePath + ".bmp");
+        }
+        else if (extension == ".dat")
+        {
+            if (_tcsicmp(pCurrFile->cFileName, "start.dat") == 0 )
+            {
+                std::string directoryPath = directory->m_szPath;
+                directoryPath.append("\\start.dat_dir");
+                CreateDirectory(directoryPath.c_str(), nullptr);
+                CSerializer startfile(filePath.c_str());
+                uint32_t uFileCount = 0;
+                startfile >> uFileCount;
+                std::map<uint32_t, std::map<std::string, uint32_t>> fileLocationInfo;
+                for (uint32_t i = 0; i < uFileCount; ++i)
+                {
+                    std::string strFileName;
+                    startfile >> strFileName;
+                    uint32_t ualignCount = startfile.GetReadPos() % 4;
+                    if (ualignCount > 0)
+                    {
+                        startfile.SetReadPos(startfile.GetReadPos() + 4 - ualignCount);
+                    }
+                    uint32_t uDataAddress = 0;
+                    while (true) // Sometimes it will align 4 more bytes, don't know why
+                    {
+                        startfile >> uDataAddress;
+                        if (uDataAddress != 0)
+                        {
+                            break;
+                        }
+                    }
+                    uint32_t uDataLength = 0;
+                    startfile >> uDataLength;
+                    std::map<std::string, uint32_t> filerecord;
+                    filerecord[strFileName] = uDataLength;
+                    fileLocationInfo[uDataAddress] = filerecord;
+                }
+                for (auto iter = fileLocationInfo.begin(); iter != fileLocationInfo.end(); ++iter)
+                {
+                    startfile.SetReadPos(iter->first);
+                    std::string filePath = directoryPath;
+                    filePath.append("\\").append(iter->second.begin()->first);
+                    CSerializer newFile;
+                    startfile.Deserialize(newFile, iter->second.begin()->second);
+                    newFile.Deserialize(filePath.c_str());
+                }
+                SDirectory starDirectory(nullptr, directoryPath.c_str());
+                CUtilityManager::GetInstance()->FillDirectory(starDirectory, true);
+                HandleDirectory(&starDirectory);
+            }
+            else if (_tcsicmp(pCurrFile->cFileName, "upload00.dat") == 0)
+            {
+            }
+            else if (_tcsicmp(pCurrFile->cFileName, "upload01.dat") == 0)
+            {
+            }
+            else
+            {
+                ConvertDataFileToBmp(filePath.c_str());
+            }
+        }
+    }
+    for (size_t i = 0; i < directory->m_pDirectories->size(); ++i)
+    {
+        HandleDirectory(directory->m_pDirectories->at(i));
+    }
+}
+
+void ExtractWholeProject(const std::string& strProjectPath)
+{
+    SDirectory projectDirectory(nullptr, strProjectPath.c_str());
+    CUtilityManager::GetInstance()->FillDirectory(projectDirectory, true);
+    HandleDirectory(&projectDirectory);
 }
 
 int _tmain(int argc, _TCHAR* argv[])
