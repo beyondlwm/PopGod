@@ -6,6 +6,11 @@
 #include <algorithm>
 #include <shlwapi.h>
 
+uint32_t uTotalFileCount = 0;
+uint32_t uHandledFileCount = 0;
+uint32_t uProcessProgress = 0;
+bool bInDataExtractProcess = false;
+
 struct STranslateRecord
 {
     uint16_t m_uLength = 0;
@@ -126,8 +131,37 @@ void ParseTextFile(iconv_t fd, const std::string& strFilePath, std::map<uint32_t
     }
 }
 
-void ConvertPalletDataFromGimToBMP(CSerializer& serializer, CSerializer& out)
+void DecryptPalette(CSerializer& serializer, CSerializer& out)
 {
+    uint32_t uOriginOutWritePos = out.GetWritePos();
+    serializer.Deserialize(out, 0x20); // First 0x20 bytes no need to transfer.
+    bool bNeedTransfer = true;
+    while (out.GetWritePos() - uOriginOutWritePos < 0x400)
+    {
+        if (bNeedTransfer)
+        {
+            unsigned char last32Bytes[32];
+            serializer.Deserialize(last32Bytes, 32);
+            serializer.Deserialize(out, 32);
+            out.Serialize(last32Bytes, 32);
+            bNeedTransfer = false;
+        }
+        else
+        {
+            uint32_t uRestDataLength = serializer.GetWritePos() - serializer.GetReadPos();
+            if (uRestDataLength >= 0x40)
+            {
+                uRestDataLength = 0x40;
+            }
+            serializer.Deserialize(out, uRestDataLength);
+            bNeedTransfer = true;
+        }
+    }
+}
+
+void ConvertPaletteDataFromGimToBMP(CSerializer& serializer, CSerializer& out, bool bNeedDecrypt)
+{
+    CSerializer paletteData;
     for (size_t i = 0; i < 1024;)
     {
         unsigned char R, G, B, A;
@@ -143,14 +177,24 @@ void ConvertPalletDataFromGimToBMP(CSerializer& serializer, CSerializer& out)
         R = (unsigned char)(R * (float)A / 0xFF);
         G = (unsigned char)(G * (float)A / 0xFF);
         B = (unsigned char)(B * (float)A / 0xFF);
-        out << B << G << R << A; //switch BGRA to RGBA.
+        paletteData << B << G << R << A; //switch BGRA to RGBA.
         i += 4;
     }
+    if (bNeedDecrypt && !bInDataExtractProcess)
+    {
+        CSerializer tmpDecrypt;
+        DecryptPalette(paletteData, tmpDecrypt);
+        paletteData.Reset();
+        tmpDecrypt.SetReadPos(0);
+        tmpDecrypt.Deserialize(paletteData);
+        BEATS_ASSERT(paletteData.GetWritePos() == 0x400);
+    }
+    out.Serialize(paletteData);
 }
 
-void ExportPallet(CSerializer& serializer, const std::string& strOutputFileName)
+void ExportPalette(CSerializer& serializer, const std::string& strOutputFileName, bool bNeedDecrypt)
 {
-    CSerializer palletData;
+    CSerializer paletteData;
     int32_t uWidth = 256;
     int32_t uHeight = -256;
     BITMAPFILEHEADER header;
@@ -169,9 +213,10 @@ void ExportPallet(CSerializer& serializer, const std::string& strOutputFileName)
     info.biClrUsed = 256;
     info.biSizeImage = (info.biWidth * info.biBitCount + 31) / 32 * 4 * info.biHeight;
 
-    palletData << header << info;
-
-    ConvertPalletDataFromGimToBMP(serializer, palletData);
+    paletteData << header << info;
+    CSerializer gimPalette;
+    ConvertPaletteDataFromGimToBMP(serializer, gimPalette, bNeedDecrypt);
+    paletteData.Serialize(gimPalette);
     for (int row = 0; row < 16; ++row)
     {
         for (int rowScan = 0; rowScan < 16; ++rowScan)
@@ -181,21 +226,25 @@ void ExportPallet(CSerializer& serializer, const std::string& strOutputFileName)
                 for (int k = 0; k < 16; ++k)
                 {
                     BEATS_ASSERT(row * 16 + col <= 0xFF);
-                    palletData << (unsigned char)(row * 16 + col);
+                    paletteData << (unsigned char)(row * 16 + col);
                 }
             }
         }
     }
-    BEATS_ASSERT(palletData.GetWritePos() == 1078 + 256 * 256);
-    palletData.Deserialize(strOutputFileName.c_str());
+    BEATS_ASSERT(paletteData.GetWritePos() == 1078 + 256 * 256);
+    paletteData.Deserialize(strOutputFileName.c_str());
 }
 
 void ConvertTx2FileToBmp(CSerializer& tx2file, const std::string& outputFileName)
 {
+    uint32_t uOrignalReadPos = tx2file.GetReadPos();
     short tx2Width, tx2Height;
     tx2file >> tx2Width >> tx2Height;
     short tx2bit;
     tx2file >> tx2bit;
+    tx2file.SetReadPos(0xF);
+    unsigned char decryptFlag;
+    tx2file >> decryptFlag;
     BEATS_ASSERT(tx2bit == 256);
 
     BITMAPFILEHEADER header;
@@ -220,24 +269,24 @@ void ConvertTx2FileToBmp(CSerializer& tx2file, const std::string& outputFileName
 
     //int txHeaderSize = tx2file.GetWritePos() - 1024 - tx2Height * tx2Width;
     //BEATS_ASSERT(txHeaderSize == 16);
-    uint32_t uPosBeforePallet = tx2file.GetReadPos() + 10;
-    tx2file.SetReadPos(uPosBeforePallet); // Skip tx2 header, we've already read another 6 bytes before.
-    ExportPallet(tx2file, outputFileName + ".pallet.bmp");
-    tx2file.SetReadPos(uPosBeforePallet); // Restore
-    ConvertPalletDataFromGimToBMP(tx2file, bmpFile);
+    tx2file.SetReadPos(uOrignalReadPos + 16);
+    ExportPalette(tx2file, outputFileName + ".pallet.bmp", decryptFlag == 0);
+    tx2file.SetReadPos(uOrignalReadPos + 16); // Restore
+    ConvertPaletteDataFromGimToBMP(tx2file, bmpFile, decryptFlag == 0);
     bmpFile.Serialize(tx2file);
     bmpFile.SetReadPos(0);
     bmpFile.Deserialize(outputFileName.c_str());
 }
 
-void ConvertDataFileToBmp(const char* pszDataPath)
+void ExtractDataFileToBmp(const char* pszDataPath)
 {
+    bInDataExtractProcess = true;
     std::string strDirectoryPath = pszDataPath;
     strDirectoryPath.append("_dir");
     CreateDirectory(strDirectoryPath.c_str(), nullptr);
     CSerializer datafile(pszDataPath, "rb");
-    uint32_t uPalletOffset;
-    datafile >> uPalletOffset;
+    uint32_t uPaletteOffset;
+    datafile >> uPaletteOffset;
     uint32_t uFileCount;
     datafile >> uFileCount;
     std::map<uint32_t, uint32_t> fileStruct;
@@ -247,27 +296,50 @@ void ConvertDataFileToBmp(const char* pszDataPath)
         datafile >> uUnknownData;
         uint32_t txFileDataOffset = 0;
         datafile >> txFileDataOffset;
-        BEATS_ASSERT(fileStruct.find(txFileDataOffset) == fileStruct.end());
+        BEATS_ASSERT(fileStruct.find(txFileDataOffset) == fileStruct.end(), "find overlap file offset in %s, offset = 0x%p", pszDataPath, txFileDataOffset);
         fileStruct[txFileDataOffset] = uUnknownData;
     }
-    BEATS_ASSERT(datafile.GetReadPos() == uPalletOffset || uPalletOffset - datafile.GetReadPos() == 8); // Sometimes it needs align
-    if (datafile.GetReadPos() != uPalletOffset)
+    BEATS_ASSERT(datafile.GetReadPos() == uPaletteOffset || uPaletteOffset - datafile.GetReadPos() == 8); // Sometimes it needs align
+    if (datafile.GetReadPos() != uPaletteOffset)
     {
-        datafile.SetReadPos(uPalletOffset);
+        datafile.SetReadPos(uPaletteOffset);
     }
     for (auto iter = fileStruct.begin(); iter != fileStruct.end(); ++iter)
     {
         datafile.SetReadPos(iter->first);
         TCHAR szBuffer[256];
-        _stprintf(szBuffer, "%s/%d.bmp", strDirectoryPath.c_str(),iter->second);
+        _stprintf(szBuffer, "%s/%d.bmp", strDirectoryPath.c_str(),iter->second);        
         ConvertTx2FileToBmp(datafile, szBuffer);
     }
+    bInDataExtractProcess = false;
 }
 
 void ConvertFontToBmp(CSerializer& fontFile, const std::string& outputFileName)
 {
-    int tx2Height = -24 * 80;
-    int tx2Width = 24 * 30;
+    int32_t uCharacterWidth = 0;
+    int32_t uCharacterHeight = 0;
+    fontFile >> uCharacterWidth >> uCharacterHeight;
+    int32_t uBytesForCharacterRow = uCharacterWidth / 2;
+    int32_t uCharacterBytes = uBytesForCharacterRow * uCharacterHeight;
+    uint32_t uFontFileSize = fontFile.GetWritePos();
+    uFontFileSize -= 16;
+    uFontFileSize -= 1024;
+    uint32_t uUselessBytesLength = uFontFileSize % uCharacterBytes;
+    if (uUselessBytesLength != 0)
+    {
+        uFontFileSize -= uUselessBytesLength;
+    }
+    BEATS_ASSERT(uFontFileSize % uCharacterBytes == 0);
+    size_t uCharacterCount = uFontFileSize / uCharacterBytes;
+
+    static const int32_t uCharacterCol = 60;
+    int32_t uRowCount = uCharacterCount / uCharacterCol;
+    if (uCharacterCount % uCharacterCol > 0)
+    {
+        ++uRowCount;
+    }
+    int32_t tx2Height = -24 * uRowCount;
+    int32_t tx2Width = 24 * uCharacterCol;
     BITMAPFILEHEADER header;
     memset(&header, 0, sizeof(header));
     header.bfType = 19778;
@@ -288,29 +360,39 @@ void ConvertFontToBmp(CSerializer& fontFile, const std::string& outputFileName)
     bmpFile << header;
     bmpFile << info;
     fontFile.SetReadPos(16);
-    ConvertPalletDataFromGimToBMP(fontFile, bmpFile);
+    ConvertPaletteDataFromGimToBMP(fontFile, bmpFile, false);
     fontFile.SetReadPos(16);
     std::string palletFileName = outputFileName;
     palletFileName.append("_pallet.bmp");
-    ExportPallet(fontFile, palletFileName);
-    for (int row = 0; row < 80; ++row)// row for font character count
+    ExportPalette(fontFile, palletFileName, false);
+    for (int row = 0; row < uRowCount; ++row)// row for font character count
     {
-        for (int ip = 0; ip < 24; ++ip)
+        for (int ip = 0; ip < uCharacterHeight; ++ip)
         {
-            for (int col = 0; col < 30; ++col) //col for font character count
+            for (int col = 0; col < uCharacterCol; ++col) //col for font character count
             {
-                uint32_t uOffset = (row * 30 + col) * 288 + ip * 12;
-                fontFile.SetReadPos(uOffset + 0x410);
-                for (int jp = 0; jp < 12; ++jp)
+                uint32_t uOffset = (row * uCharacterCol + col) * uCharacterBytes + ip * uBytesForCharacterRow;
+                if (uOffset + 0x410 >= uFontFileSize)
                 {
-                    unsigned char _4ppdata;
-                    fontFile >> _4ppdata;
-                    unsigned char high = _4ppdata >> 4;
-                    unsigned char low = _4ppdata & 0x0F;
-                    bmpFile << low << high;
+                    for (int jp = 0; jp < uBytesForCharacterRow; ++jp)
+                    {
+                        unsigned char fillchar = 0;
+                        bmpFile << fillchar << fillchar;
+                    }
+                }
+                else
+                {
+                    fontFile.SetReadPos(uOffset + 0x410);
+                    for (int jp = 0; jp < uBytesForCharacterRow; ++jp)
+                    {
+                        unsigned char _4ppdata;
+                        fontFile >> _4ppdata;
+                        unsigned char high = _4ppdata >> 4;
+                        unsigned char low = _4ppdata & 0x0F;
+                        bmpFile << low << high;
+                    }
                 }
             }
-
         }
     }
     bmpFile.Deserialize(outputFileName.c_str());
@@ -323,13 +405,13 @@ void HandleDirectory(const SDirectory* directory)
         TFileData* pCurrFile = directory->m_pFileList->at(i);
         std::string extension = PathFindExtension(pCurrFile->cFileName);
         std::string filePath = directory->m_szPath;
-        filePath.append("\\").append(pCurrFile->cFileName);
+        filePath.append(pCurrFile->cFileName);
         if (_tcsicmp(extension.c_str(), ".tx2") == 0)
         {
             CSerializer tx2File(filePath.c_str());
             ConvertTx2FileToBmp(tx2File, filePath + ".bmp");
         }
-        else if (extension == ".dat")
+        else if (_tcsicmp(extension.c_str(), ".dat") == 0)
         {
             if (_tcsicmp(pCurrFile->cFileName, "start.dat") == 0 )
             {
@@ -383,10 +465,41 @@ void HandleDirectory(const SDirectory* directory)
             else if (_tcsicmp(pCurrFile->cFileName, "upload01.dat") == 0)
             {
             }
+            else if (_tcsicmp(pCurrFile->cFileName, "data.dat") == 0)
+            {
+            }
+            else if (_tcsicmp(pCurrFile->cFileName, "keyword.dat") == 0)
+            {
+            }
+            else if (_tcsicmp(pCurrFile->cFileName, "OCCULTFILE.DAT") == 0)
+            {
+            }
+            else if (_tcsicmp(pCurrFile->cFileName, "STORY.DAT") == 0)
+            {
+            }
+            else if (_tcsicmp(pCurrFile->cFileName, "LOGIC.DAT") == 0)
+            {
+            }
+            else if (_tcsicmp(pCurrFile->cFileName, "SELECTER.DAT") == 0)
+            {
+            }            
             else
             {
-                ConvertDataFileToBmp(filePath.c_str());
+                ExtractDataFileToBmp(filePath.c_str());
             }
+        }
+        else if (_tcsicmp(extension.c_str(), ".ftx") == 0)
+        {
+            CSerializer fontFile(filePath.c_str());
+            ConvertFontToBmp(fontFile, filePath + ".bmp");
+        }
+        ++uHandledFileCount;
+        uint32_t curProgress = uHandledFileCount * 100 / uTotalFileCount;
+        if (curProgress > uProcessProgress && curProgress <= 100)
+        {
+            uProcessProgress = curProgress;
+            system("cls");
+            printf("当前进度：%d%%    请稍等。。。", curProgress);
         }
     }
     for (size_t i = 0; i < directory->m_pDirectories->size(); ++i)
@@ -395,40 +508,58 @@ void HandleDirectory(const SDirectory* directory)
     }
 }
 
+uint32_t GetFileCount(const SDirectory* pDirectory)
+{
+    uint32_t uCount = pDirectory->m_pFileList->size();
+    for (size_t i = 0; i < pDirectory->m_pDirectories->size(); ++i)
+    {
+        uCount += GetFileCount(pDirectory->m_pDirectories->at(i));
+    }
+    return uCount;
+}
+
 void ExtractWholeProject(const std::string& strProjectPath)
 {
     SDirectory projectDirectory(nullptr, strProjectPath.c_str());
     CUtilityManager::GetInstance()->FillDirectory(projectDirectory, true);
+    uTotalFileCount = GetFileCount(&projectDirectory);
     HandleDirectory(&projectDirectory);
 }
 
 int _tmain(int argc, _TCHAR* argv[])
 {
-    iconv_t fd = iconv_open("SHIFT_JIS", "");
-    if (fd != (iconv_t)0xFFFFFFFF)
-    {
-        std::map<uint32_t, STranslateRecord> recordMap;
-        ParseTextFile(fd, "../Resource/SourceFile/bootdata.txt", recordMap);
-        CSerializer bootDataFile("../Resource/SourceFile/boot.bin", "rb+");
-        char* pBootData = (char*)bootDataFile.GetBuffer();
-        for (auto iter = recordMap.begin(); iter != recordMap.end(); ++iter)
-        {
-            uint32_t uBaseAddress = iter->first;
-            BEATS_ASSERT(iter->second.m_strProcessedStr.size() <= iter->second.m_uLength);
-            for (size_t i = 0; i < iter->second.m_uLength; ++i)
-            {
-                if (i < iter->second.m_strProcessedStr.size())
-                {
-                    char data = iter->second.m_strProcessedStr[i];
-                    pBootData[uBaseAddress + i] = data;
-                }
-                else
-                {
-                    pBootData[uBaseAddress + i] = 0; //If the translated text length is less than the orginal text, fill the rest with 0.
-                }
-            }
-        }
-        bootDataFile.Deserialize("../Resource/SourceFile/boot_hack.bin", "wb+");
+    TCHAR szBuffer[MAX_PATH];
+    GetCurrentDirectory(MAX_PATH, szBuffer);
+    ExtractWholeProject(szBuffer);
+    system("cls");
+    printf("解包完成。");
+    system("pause");
+
+    //iconv_t fd = iconv_open("SHIFT_JIS", "");
+    //if (fd != (iconv_t)0xFFFFFFFF)
+    //{
+    //    std::map<uint32_t, STranslateRecord> recordMap;
+    //    ParseTextFile(fd, "../Resource/SourceFile/bootdata.txt", recordMap);
+    //    CSerializer bootDataFile("../Resource/SourceFile/boot.bin", "rb+");
+    //    char* pBootData = (char*)bootDataFile.GetBuffer();
+    //    for (auto iter = recordMap.begin(); iter != recordMap.end(); ++iter)
+    //    {
+    //        uint32_t uBaseAddress = iter->first;
+    //        BEATS_ASSERT(iter->second.m_strProcessedStr.size() <= iter->second.m_uLength);
+    //        for (size_t i = 0; i < iter->second.m_uLength; ++i)
+    //        {
+    //            if (i < iter->second.m_strProcessedStr.size())
+    //            {
+    //                char data = iter->second.m_strProcessedStr[i];
+    //                pBootData[uBaseAddress + i] = data;
+    //            }
+    //            else
+    //            {
+    //                pBootData[uBaseAddress + i] = 0; //If the translated text length is less than the orginal text, fill the rest with 0.
+    //            }
+    //        }
+    //    }
+    //    bootDataFile.Deserialize("../Resource/SourceFile/boot_hack.bin", "wb+");
 
         //ParseTextFile(fd, "../Resource/SourceFile/Chapter0.txt", recordMap);
         //CSerializer startDataFile("../Resource/SourceFile/start.DAT", "rb+");
@@ -452,7 +583,7 @@ int _tmain(int argc, _TCHAR* argv[])
         //}
         //startDataFile.Deserialize("../Resource/SourceFile/start_hack.DAT", "wb+");
         //iconv_close(fd);
-    }
-	return 0;
+    //}
+    return 0;
 }
 
