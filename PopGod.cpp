@@ -9,7 +9,6 @@
 uint32_t uTotalFileCount = 0;
 uint32_t uHandledFileCount = 0;
 uint32_t uProcessProgress = 0;
-bool bInDataExtractProcess = false;
 
 struct STranslateRecord
 {
@@ -180,7 +179,7 @@ void ConvertPaletteDataFromGimToBMP(CSerializer& serializer, CSerializer& out, b
         paletteData << B << G << R << A; //switch BGRA to RGBA.
         i += 4;
     }
-    if (bNeedDecrypt && !bInDataExtractProcess)
+    if (bNeedDecrypt)
     {
         CSerializer tmpDecrypt;
         DecryptPalette(paletteData, tmpDecrypt);
@@ -280,7 +279,6 @@ void ConvertTx2FileToBmp(CSerializer& tx2file, const std::string& outputFileName
 
 void ExtractDataFileToBmp(const char* pszDataPath)
 {
-    bInDataExtractProcess = true;
     std::string strDirectoryPath = pszDataPath;
     strDirectoryPath.append("_dir");
     CreateDirectory(strDirectoryPath.c_str(), nullptr);
@@ -304,14 +302,28 @@ void ExtractDataFileToBmp(const char* pszDataPath)
     {
         datafile.SetReadPos(uPaletteOffset);
     }
+    uint32_t uFileCounter = 0;
     for (auto iter = fileStruct.begin(); iter != fileStruct.end(); ++iter)
     {
         datafile.SetReadPos(iter->first);
+        uint32_t uFileLength = datafile.GetWritePos() - iter->first;
+        if (uFileCounter != fileStruct.size() - 1)
+        {
+            auto nextIter = iter;
+            ++nextIter;
+            uFileLength = nextIter->first - iter->first;
+        }
+        CSerializer txFileSerializer;
+        datafile.Deserialize(txFileSerializer, uFileLength);
         TCHAR szBuffer[256];
-        _stprintf(szBuffer, "%s/%d.bmp", strDirectoryPath.c_str(),iter->second);        
-        ConvertTx2FileToBmp(datafile, szBuffer);
+        _stprintf(szBuffer, "%s/%d.tx2", strDirectoryPath.c_str(), iter->second);
+        txFileSerializer.Deserialize(szBuffer);
+        txFileSerializer.SetReadPos(0);
+
+        _stprintf(szBuffer, "%s/%d.bmp", strDirectoryPath.c_str(),iter->second);
+        ConvertTx2FileToBmp(txFileSerializer, szBuffer);
+        ++uFileCounter;
     }
-    bInDataExtractProcess = false;
 }
 
 void ConvertFontToBmp(CSerializer& fontFile, const std::string& outputFileName)
@@ -495,12 +507,13 @@ void HandleDirectory(const SDirectory* directory)
         }
         ++uHandledFileCount;
         uint32_t curProgress = uHandledFileCount * 100 / uTotalFileCount;
-        if (curProgress > uProcessProgress && curProgress <= 100)
+        if (curProgress > 100)
         {
-            uProcessProgress = curProgress;
-            system("cls");
-            printf("当前进度：%d%%    请稍等。。。", curProgress);
+            curProgress = 100;
         }
+        system("cls");
+        printf("当前进度：%d%%    请稍等。。。", curProgress);
+        printf("正在处理：%s", pCurrFile->cFileName);
     }
     for (size_t i = 0; i < directory->m_pDirectories->size(); ++i)
     {
