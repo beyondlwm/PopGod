@@ -9,7 +9,7 @@
 uint32_t uTotalFileCount = 0;
 uint32_t uHandledFileCount = 0;
 uint32_t uProcessProgress = 0;
-
+iconv_t fd = 0;
 struct STranslateRecord
 {
     uint16_t m_uLength = 0;
@@ -62,6 +62,17 @@ void ConvertString(iconv_t fd, const char* * inbuf, size_t *inbytesleft, char* *
             ConvertString(fd, inbuf, &uInBytesLeft, outbuf, outbytesleft, ret);
         }
     }
+}
+
+void ConvertString(iconv_t fd, const std::string& rawString, std::string& output)
+{
+    const char* pszReader = rawString.c_str();
+    uint32_t uInputSize = rawString.length();
+    char szBuffer[10240];
+    ZeroMemory(szBuffer, 10240);
+    char* pWriter = szBuffer;
+    uint32_t uOutputSize = 10240;
+    ConvertString(fd, &pszReader, &uInputSize, &pWriter, &uOutputSize, output);
 }
 
 void ParseTextFile(iconv_t fd, const std::string& strFilePath, std::map<uint32_t, STranslateRecord>& recordMap)
@@ -350,8 +361,8 @@ void ConvertFontToBmp(CSerializer& fontFile, const std::string& outputFileName)
     {
         ++uRowCount;
     }
-    int32_t tx2Height = -24 * uRowCount;
-    int32_t tx2Width = 24 * uCharacterCol;
+    int32_t tx2Height = -uCharacterHeight * uRowCount;
+    int32_t tx2Width = uCharacterWidth * uCharacterCol;
     BITMAPFILEHEADER header;
     memset(&header, 0, sizeof(header));
     header.bfType = 19778;
@@ -425,7 +436,7 @@ void HandleDirectory(const SDirectory* directory)
         }
         else if (_tcsicmp(extension.c_str(), ".dat") == 0)
         {
-            if (_tcsicmp(pCurrFile->cFileName, "start.dat") == 0 )
+            if (_tcsicmp(pCurrFile->cFileName, "start.dat") == 0)
             {
                 std::string directoryPath = directory->m_szPath;
                 directoryPath.append("\\start.dat_dir");
@@ -479,6 +490,30 @@ void HandleDirectory(const SDirectory* directory)
             }
             else if (_tcsicmp(pCurrFile->cFileName, "data.dat") == 0)
             {
+                // Record the info of file length and address from somewhere, could ignore.
+                std::vector<std::string> nameList;
+                CSerializer data(filePath.c_str());
+                uint32_t uFileCount = 0;
+                data >> uFileCount;
+                std::string strName;
+                for (size_t i = 0; i < uFileCount; ++i)
+                {
+                    data >> strName;
+                    uint32_t uAlign = data.GetReadPos() % 4;
+                    if (uAlign != 0)
+                    {
+                        data.SetReadPos(data.GetReadPos() + 4 - uAlign);
+                        BEATS_ASSERT(data.GetReadPos() % 4 == 0);
+                    }
+                    uint32_t uAddress, uLength;
+                    data >> uAddress;
+                    if (uAddress == 0)
+                    {
+                        data >> uAddress;
+                    }
+                    data >> uLength;
+                    BEATS_PRINT("%s 0x%p 0x%p\n", strName.c_str(), uAddress, uLength);
+                }
             }
             else if (_tcsicmp(pCurrFile->cFileName, "keyword.dat") == 0)
             {
@@ -491,10 +526,60 @@ void HandleDirectory(const SDirectory* directory)
             }
             else if (_tcsicmp(pCurrFile->cFileName, "LOGIC.DAT") == 0)
             {
+
             }
             else if (_tcsicmp(pCurrFile->cFileName, "SELECTER.DAT") == 0)
             {
-            }            
+                CSerializer selectorFile(filePath.c_str());
+                uint32_t uSelectCount = 0;
+                selectorFile >> uSelectCount;
+                std::map<uint32_t, uint32_t> info;
+                uint32_t uLastAddress = 0;
+                for (size_t i = 0; i < uSelectCount; ++i)
+                {
+                    uint32_t uAddress = 0;
+                    selectorFile >> uAddress;
+                    if (uLastAddress > 0)
+                    {
+                        info[uLastAddress] = uAddress - uLastAddress - 32 - 16;
+                    }
+                    uLastAddress = uAddress;
+                }
+                info[uLastAddress] = selectorFile.GetWritePos() - uLastAddress - 32 - 16;
+                for (auto iter = info.begin(); iter != info.end(); ++iter)
+                {
+                    uint32_t uStarAddress = iter->first;
+                    selectorFile.SetReadPos(uStarAddress);
+                    std::string strTitle;
+                    selectorFile >> strTitle;
+                    selectorFile.SetReadPos(uStarAddress + 32);//maybe it is a char[32].
+                    std::string strChapterInfo;
+                    selectorFile >> strChapterInfo; // maybe it is a char[16].
+                    selectorFile.SetReadPos(uStarAddress + 32 + 16);
+                    uint32_t uLength = iter->second;
+                    BEATS_ASSERT(uLength % 4 == 0);
+                    for (size_t i = 0; i < strTitle.size(); ++i)
+                    {
+                        strTitle[i] = ~strTitle[i];
+                    }
+                    for (size_t i = 0; i < strChapterInfo.size(); ++i)
+                    {
+                        strChapterInfo[i] = ~strChapterInfo[i];
+                    }
+                    std::string strTitle2, strChapterInfo2;
+                    ConvertString(fd, strTitle, strTitle2);
+                    ConvertString(fd, strChapterInfo, strChapterInfo2);
+                    BEATS_PRINT("%s %s\n", strTitle2.c_str(), strChapterInfo2.c_str());
+                    while (uLength > 0)
+                    {
+                        uint32_t uData;
+                        selectorFile >> uData;
+                        BEATS_PRINT(" 0x%p", uData);
+                        uLength -= 4;
+                    }
+                    BEATS_PRINT("\n");
+                }
+            }
             else
             {
                 ExtractDataFileToBmp(filePath.c_str());
@@ -504,6 +589,36 @@ void HandleDirectory(const SDirectory* directory)
         {
             CSerializer fontFile(filePath.c_str());
             ConvertFontToBmp(fontFile, filePath + ".bmp");
+        }
+        else if (_tcsicmp(pCurrFile->cFileName, "logic_dispos.pak") == 0) // This file is related to the game logic.
+        {
+            CSerializer logic_disposFile(filePath.c_str());
+            uint32_t postCount = 0;
+            logic_disposFile >> postCount;
+            std::map<uint32_t, uint32_t> chapterInfo;
+            for (size_t i = 0; i < postCount; ++i)
+            {
+                uint32_t uStartPos, uLength;
+                logic_disposFile >> uStartPos >> uLength;
+                BEATS_ASSERT(chapterInfo.find(uStartPos) == chapterInfo.end());
+                chapterInfo[uStartPos] = uLength;
+            }
+            for (auto iter = chapterInfo.begin(); iter != chapterInfo.end(); ++iter)
+            {
+                logic_disposFile.SetReadPos(iter->first);
+                BEATS_PRINT("addr: 0x%p len:%d\n", iter->first, iter->second);
+                while (true)
+                {
+                    uint32_t uHeader, a, b, pictureNameId, d, e;
+                    logic_disposFile >> uHeader;
+                    if (uHeader == 0x5F444e45) //"END_" flag
+                    {
+                        break;
+                    }
+                    logic_disposFile >> a >> b >> pictureNameId >> d >> e;
+                    BEATS_PRINT("header:%d data: %d %d %d %d %d\n", uHeader, a, b, pictureNameId, d, e); // if pictureNameId = 6108, we must got the file 6108.tx2
+                }
+            }
         }
         ++uHandledFileCount;
         uint32_t curProgress = uHandledFileCount * 100 / uTotalFileCount;
@@ -541,16 +656,15 @@ void ExtractWholeProject(const std::string& strProjectPath)
 
 int _tmain(int argc, _TCHAR* argv[])
 {
-    TCHAR szBuffer[MAX_PATH];
-    GetCurrentDirectory(MAX_PATH, szBuffer);
-    ExtractWholeProject(szBuffer);
-    system("cls");
-    printf("解包完成。");
-    system("pause");
+    fd = iconv_open("", "SHIFT_JIS");
+    if (fd != (iconv_t)0xFFFFFFFF)
+    {
+        TCHAR szBuffer[MAX_PATH];
+        GetCurrentDirectory(MAX_PATH, szBuffer);
+        ExtractWholeProject("D:\\PSP_crack\\psp\\Hayarigami_Portable_Keishichou_Kaii_Jiken_JNP");
+        printf("解包完成。");
+        system("pause");
 
-    //iconv_t fd = iconv_open("SHIFT_JIS", "");
-    //if (fd != (iconv_t)0xFFFFFFFF)
-    //{
     //    std::map<uint32_t, STranslateRecord> recordMap;
     //    ParseTextFile(fd, "../Resource/SourceFile/bootdata.txt", recordMap);
     //    CSerializer bootDataFile("../Resource/SourceFile/boot.bin", "rb+");
@@ -595,8 +709,8 @@ int _tmain(int argc, _TCHAR* argv[])
         //    }
         //}
         //startDataFile.Deserialize("../Resource/SourceFile/start_hack.DAT", "wb+");
-        //iconv_close(fd);
-    //}
+        iconv_close(fd);
+    }
     return 0;
 }
 
