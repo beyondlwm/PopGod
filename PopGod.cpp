@@ -42,37 +42,90 @@ std::string FilterControlCharacter(const std::string& strOri)
     return ret;
 }
 
-void ConvertString(iconv_t fd, const char* * inbuf, size_t *inbytesleft, char* * outbuf, size_t *outbytesleft, std::string& ret)
+void ConvertString(iconv_t fd, const std::string& rawString, std::string& output, bool bWriteControlCode = false)
 {
-    size_t uInBytesLeft = *inbytesleft;
-    char* pszoutBuffer = *outbuf;
-    size_t uRet = iconv(fd, inbuf, inbytesleft, outbuf, outbytesleft);
-    size_t convertSize = uInBytesLeft - *inbytesleft;
-    if (convertSize > 0)
+    const unsigned char* pData = (const unsigned char*)rawString.c_str();
+    uint32_t uInputSize = rawString.length();
+    TCHAR szBuffer[10240];
+    uint32_t uWriteCounter = 0;
+    while (uInputSize > 3)
     {
-        ret.append(pszoutBuffer, convertSize);
-    }
-    if (uRet == 0xFFFFFFFF)
-    {
-        ret.append("\x81\x48");
-        if (*inbytesleft > 2)
+        if (pData[0] == 0xFF)
         {
-            uInBytesLeft = *inbytesleft - 2;
-            (*inbuf) += 2;
-            ConvertString(fd, inbuf, &uInBytesLeft, outbuf, outbytesleft, ret);
+            if (bWriteControlCode)
+            {
+                _stprintf(szBuffer, "0x%.2x%.2x%.2x%.2x ", pData[0], pData[1], pData[2], pData[3]);
+                output.append(szBuffer);
+            }
+            pData += 4;
+            uInputSize -= 4;
+            uWriteCounter += 4;
+        }
+        else
+        {
+            unsigned char inputBuffer[4];
+            inputBuffer[0] = ~pData[0];
+            inputBuffer[1] = ~pData[1];
+            inputBuffer[2] = ~pData[2];
+            inputBuffer[3] = ~pData[3];
+            unsigned char firstChar = inputBuffer[0];
+            unsigned char secondChar = inputBuffer[1];
+            bool bValid = ((firstChar >= 0x81 && firstChar <= 0x9F) || (firstChar >= 0xE0 && firstChar < 0xEF)) &&
+                ((secondChar >= 0x40 && secondChar <= 0x7E) || (secondChar >= 0x80 && secondChar <= 0xFC));
+            if (!bValid)
+            {
+                bValid = firstChar >= 0xF0 && firstChar <= 0xFC && ((secondChar >= 0x40 && secondChar <= 0x7E) || (secondChar >= 0x80 && secondChar <= 0xFC));
+            }
+            if (!bValid)
+            {
+                if (bWriteControlCode)
+                {
+                    _stprintf(szBuffer, "0x%.2x%.2x%.2x%.2x ", pData[0], pData[1], pData[2], pData[3]);
+                    output.append(szBuffer);
+                }
+                pData += 4;
+                uInputSize -= 4;
+                uWriteCounter += 4;
+            }
+            else
+            {
+                const char* pReader = (const char*)inputBuffer;
+                uint32_t uLeftBytes = uInputSize;
+                char* pWriter = szBuffer;
+                uint32_t uWriteLeft = 10240;
+                iconv(fd, &pReader, &uLeftBytes, &pWriter, &uWriteLeft);
+                uint32_t uWriteCount = uInputSize - uLeftBytes;
+                if (uWriteCount == 0)
+                {
+                    if (bWriteControlCode)
+                    {
+                        _stprintf(szBuffer, "0x%.2x%.2x%.2x%.2x ", pData[0], pData[1], pData[2], pData[3]);
+                        output.append(szBuffer);
+                    }
+                    pData += 4;
+                    uInputSize -= 4;
+                    uWriteCounter += 4;
+                }
+                else
+                {
+                    szBuffer[uWriteCount] = 0;
+                    output.append(szBuffer);
+                    if ((uWriteCount % 4) != 0)
+                    {
+                        uWriteCount = uWriteCount + 4 - (uWriteCount % 4);
+                    }
+                    pData += uWriteCount;
+                    uInputSize -= uWriteCount;
+                    uWriteCounter += uWriteCount;
+                }
+            }
+        }
+        if (uWriteCounter >= 32)
+        {
+            output.append("\r\n");
+            uWriteCounter = 0;
         }
     }
-}
-
-void ConvertString(iconv_t fd, const std::string& rawString, std::string& output)
-{
-    const char* pszReader = rawString.c_str();
-    uint32_t uInputSize = rawString.length();
-    char szBuffer[10240];
-    ZeroMemory(szBuffer, 10240);
-    char* pWriter = szBuffer;
-    uint32_t uOutputSize = 10240;
-    ConvertString(fd, &pszReader, &uInputSize, &pWriter, &uOutputSize, output);
 }
 
 void ParseTextFile(iconv_t fd, const std::string& strFilePath, std::map<uint32_t, STranslateRecord>& recordMap)
@@ -130,12 +183,7 @@ void ParseTextFile(iconv_t fd, const std::string& strFilePath, std::map<uint32_t
             pNewRecord->m_strOriginStr.resize(pNewRecord->m_uLength);
             BEATS_WARNING(false, "%d length overflow, cut off some content!", pNewRecord->m_uAddress);
         }
-        const char* pszReader = pNewRecord->m_strOriginStr.c_str();
-        uint32_t uInputSize = pNewRecord->m_strOriginStr.length();
-        ZeroMemory(szBuffer, 10240);
-        char* pWriter = szBuffer;
-        uint32_t uOutputSize = 10240;
-        ConvertString(fd, &pszReader, &uInputSize, &pWriter, &uOutputSize, pNewRecord->m_strProcessedStr);
+        ConvertString(fd, pNewRecord->m_strOriginStr.c_str(), pNewRecord->m_strProcessedStr);
         BEATS_ASSERT(pNewRecord->m_strProcessedStr.length() <= pNewRecord->m_uLength);
         BEATS_PRINT("%p from %s to %s\n", pNewRecord->m_uAddress, pNewRecord->m_strOriginStr.c_str(), pNewRecord->m_strProcessedStr.c_str());
     }
@@ -523,6 +571,44 @@ void HandleDirectory(const SDirectory* directory)
             }
             else if (_tcsicmp(pCurrFile->cFileName, "STORY.DAT") == 0)
             {
+                CSerializer storyFile(filePath.c_str());
+                uint32_t uDataIndex = 0;
+                storyFile >> uDataIndex;
+                uint32_t uDataCount = 0;
+                storyFile >> uDataCount;
+                std::map<uint32_t, std::pair<uint32_t, uint32_t> > recordMap;
+                uint32_t* pLengthDataAddress = nullptr;
+                uint32_t uLastAddress = 0;
+                for (size_t i = 0; i < uDataCount; ++i) 
+                {
+                    uint32_t uDataIndex, uStartAddress;
+                    storyFile >> uDataIndex >> uStartAddress;
+                    BEATS_ASSERT(recordMap.find(uDataIndex) == recordMap.end());
+                    recordMap[uDataIndex] = std::make_pair(uStartAddress, 0);
+                    if (pLengthDataAddress != nullptr)
+                    {
+                        BEATS_ASSERT(uStartAddress > uLastAddress);
+                        *pLengthDataAddress = uStartAddress - uLastAddress;
+                    }
+                    pLengthDataAddress = &recordMap[uDataIndex].second;
+                    uLastAddress = uStartAddress;
+                }
+                *pLengthDataAddress = storyFile.GetWritePos() - uLastAddress;
+                CSerializer textFile;
+                for (auto iter = recordMap.begin(); iter != recordMap.end(); ++iter)
+                {
+                    textFile.Reset();
+                    storyFile.SetReadPos(iter->second.first);
+                    storyFile.Deserialize(textFile, iter->second.second);
+                    std::string strInput((const char*)textFile.GetBuffer(), textFile.GetWritePos());
+                    std::string output;
+                    ConvertString(fd, strInput, output);
+                    //char szBuffer[MAX_PATH];
+                    //_stprintf(szBuffer, "C:/testText/%d.txt", iter->first);
+                    //FILE* pFile = _tfopen(szBuffer, "wb+");
+                    //fwrite(output.c_str(), 1, output.length() + 1, pFile);
+                    //fclose(pFile);
+                }
             }
             else if (_tcsicmp(pCurrFile->cFileName, "LOGIC.DAT") == 0)
             {
