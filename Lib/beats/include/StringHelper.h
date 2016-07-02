@@ -40,9 +40,13 @@ public:
     const char *Utf8ExtractCodePoint(const char* pBuffer, uint32_t& code);
     std::wstring Utf8ToWString(const char* utf8str);
     std::string WStringToUtf8(const wchar_t* wstr);
-
+    uint32_t BKDRHash(const char* strData) const;
+    TString ToLower(const TString& strIn) const;
+    TString ToUpper(const TString& strIn) const;
+    TString InsertString(const TString& strSourceStr, const TString& strInsertStr, bool bReverse, int32_t nStartPos = 0, uint32_t uInterval = 0xFFFFFFFF);
+    TString ReplaceString(const TString& strSourceStr, const TString& strToReplace, const TString& newStr);
     // Check character.
-#if (BEATS_PLATFORM == BEATS_PLATFORM_WIN32)
+#if (BEYONDENGINE_PLATFORM == PLATFORM_WIN32)
     // Only available in utf-16
     CStringHelper::EStringCharacterType GetCharacterType(wchar_t character) const;
     CStringHelper::EStringCharacterType GetCharacterType(const char* pszChar) const;
@@ -50,7 +54,7 @@ public:
     std::string StringToUtf8(const char* str);
 
 #endif
-    bool WildMatch(const char* pat, const char* str); 
+    bool WildMatch(const char* pat, const char* str);
 };
 
 #endif

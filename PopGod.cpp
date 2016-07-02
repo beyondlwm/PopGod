@@ -2,6 +2,7 @@
 #include "Serializer.h"
 #include "StringHelper.h"
 #include "UtilityManager.h"
+#include "FilePathTool.h"
 #include "iconv.h"
 #include <algorithm>
 #include <shlwapi.h>
@@ -13,6 +14,10 @@ uint32_t uProcessProgress = 0;
 iconv_t fd = 0;
 HWND BEYONDENGINE_HWND = nullptr;
 std::vector<TString> g_registeredSingleton;
+
+static const std::string strOriginPath = "D:/PSP_crack/psp/Origin";
+static const std::string strDecryptPath = "D:/PSP_crack/psp/Decrypt";
+static const std::string strEncryptPath = "D:/PSP_crack/psp/Encrypt";
 struct STranslateRecord
 {
     uint16_t m_uLength = 0;
@@ -341,7 +346,7 @@ void ConvertTx2FileToBmp(CSerializer& tx2file, const std::string& outputFileName
 
 void ExtractDataFileToBmp(const char* pszDataPath)
 {
-    std::string strDirectoryPath = pszDataPath;
+    std::string strDirectoryPath = CStringHelper::GetInstance()->ReplaceString(pszDataPath, "Origin", "Decrypt");
     strDirectoryPath.append("_dir");
     CreateDirectory(strDirectoryPath.c_str(), nullptr);
     CSerializer datafile(pszDataPath, "rb");
@@ -474,6 +479,8 @@ void ConvertFontToBmp(CSerializer& fontFile, const std::string& outputFileName)
 
 void HandleDirectory(const SDirectory* directory)
 {
+    std::string decryptPath = CStringHelper::GetInstance()->ReplaceString(directory->m_szPath, "Origin", "Decrypt");
+    CFilePathTool::GetInstance()->MakeDirectory(decryptPath.c_str());
     for (size_t i = 0; i < directory->m_pFileList->size(); ++i)
     {
         TFileData* pCurrFile = directory->m_pFileList->at(i);
@@ -483,13 +490,15 @@ void HandleDirectory(const SDirectory* directory)
         if (_tcsicmp(extension.c_str(), ".tx2") == 0)
         {
             CSerializer tx2File(filePath.c_str());
-            ConvertTx2FileToBmp(tx2File, filePath + ".bmp");
+            std::string decryptPath = CStringHelper::GetInstance()->ReplaceString(filePath, "Origin", "Decrypt");
+            decryptPath.append(".bmp");
+            ConvertTx2FileToBmp(tx2File, decryptPath);
         }
         else if (_tcsicmp(extension.c_str(), ".dat") == 0)
         {
             if (_tcsicmp(pCurrFile->cFileName, "start.dat") == 0)
             {
-                std::string directoryPath = directory->m_szPath;
+                std::string directoryPath = decryptPath;
                 directoryPath.append("\\start.dat_dir");
                 CreateDirectory(directoryPath.c_str(), nullptr);
                 CSerializer startfile(filePath.c_str());
@@ -606,11 +615,11 @@ void HandleDirectory(const SDirectory* directory)
                     std::string strInput((const char*)textFile.GetBuffer(), textFile.GetWritePos());
                     std::string output;
                     ConvertString(fd, strInput, output);
-                    //char szBuffer[MAX_PATH];
-                    //_stprintf(szBuffer, "C:/testText/%d.txt", iter->first);
-                    //FILE* pFile = _tfopen(szBuffer, "wb+");
-                    //fwrite(output.c_str(), 1, output.length() + 1, pFile);
-                    //fclose(pFile);
+                    char szBuffer[MAX_PATH];
+                    _stprintf(szBuffer, "C:/testText/%d.txt", iter->first);
+                    FILE* pFile = _tfopen(szBuffer, "wb+");
+                    fwrite(output.c_str(), 1, output.length() + 1, pFile);
+                    fclose(pFile);
                 }
             }
             else if (_tcsicmp(pCurrFile->cFileName, "LOGIC.DAT") == 0)
@@ -677,7 +686,10 @@ void HandleDirectory(const SDirectory* directory)
         else if (_tcsicmp(extension.c_str(), ".ftx") == 0)
         {
             CSerializer fontFile(filePath.c_str());
-            ConvertFontToBmp(fontFile, filePath + ".bmp");
+            std::string strDecryptFile = decryptPath;
+            strDecryptFile.append(pCurrFile->cFileName);
+            strDecryptFile.append(".bmp");
+            ConvertFontToBmp(fontFile, strDecryptFile);
         }
         else if (_tcsicmp(pCurrFile->cFileName, "logic_dispos.pak") == 0) // This file is related to the game logic.
         {
@@ -750,7 +762,7 @@ int _tmain(int argc, _TCHAR* argv[])
     {
         TCHAR szBuffer[MAX_PATH];
         GetCurrentDirectory(MAX_PATH, szBuffer);
-        ExtractWholeProject("D:\\PSP_crack\\psp\\Origin");
+        ExtractWholeProject(strOriginPath);
         printf("解包完成。");
         system("pause");
 
