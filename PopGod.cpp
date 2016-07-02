@@ -477,6 +477,58 @@ void ConvertFontToBmp(CSerializer& fontFile, const std::string& outputFileName)
     bmpFile.Deserialize(outputFileName.c_str());
 }
 
+void ExtractStoryData(const char* pszStoryDataFile)
+{
+    CSerializer storyFile(pszStoryDataFile);
+    uint32_t uDataIndex = 0;
+    storyFile >> uDataIndex;
+    uint32_t uDataCount = 0;
+    storyFile >> uDataCount;
+    std::map<uint32_t, std::pair<uint32_t, uint32_t> > recordMap;
+    uint32_t* pLengthDataAddress = nullptr;
+    uint32_t uLastAddress = 0;
+    for (size_t i = 0; i < uDataCount; ++i)
+    {
+        uint32_t uDataIndex, uStartAddress;
+        storyFile >> uDataIndex >> uStartAddress;
+        BEATS_ASSERT(recordMap.find(uDataIndex) == recordMap.end());
+        recordMap[uDataIndex] = std::make_pair(uStartAddress, 0);
+        if (pLengthDataAddress != nullptr)
+        {
+            BEATS_ASSERT(uStartAddress > uLastAddress);
+            *pLengthDataAddress = uStartAddress - uLastAddress;
+        }
+        pLengthDataAddress = &recordMap[uDataIndex].second;
+        uLastAddress = uStartAddress;
+    }
+    *pLengthDataAddress = storyFile.GetWritePos() - uLastAddress;
+    CSerializer textFile;
+    TString strDecryptPath = CStringHelper::GetInstance()->ReplaceString(pszStoryDataFile, "Origin", "Decrypt");
+    strDecryptPath.append("_dir/");
+    CreateDirectory(strDecryptPath.c_str(), nullptr);
+    for (auto iter = recordMap.begin(); iter != recordMap.end(); ++iter)
+    {
+        textFile.Reset();
+        storyFile.SetReadPos(iter->second.first);
+        storyFile.Deserialize(textFile, iter->second.second);
+        std::string strInput((const char*)textFile.GetBuffer(), textFile.GetWritePos());
+        std::string output;
+        ConvertString(fd, strInput, output);
+        char szBuffer[MAX_PATH];
+        std::string filePath = strDecryptPath;
+        filePath.append("%d.txt");
+        _stprintf(szBuffer, filePath.c_str(), iter->first);
+        FILE* pFile = _tfopen(szBuffer, "wb+");
+        fwrite(output.c_str(), 1, output.length() + 1, pFile);
+        fclose(pFile);
+    }
+}
+
+void PackStoryData()
+{
+
+}
+
 void HandleDirectory(const SDirectory* directory)
 {
     std::string decryptPath = CStringHelper::GetInstance()->ReplaceString(directory->m_szPath, "Origin", "Decrypt");
@@ -499,7 +551,7 @@ void HandleDirectory(const SDirectory* directory)
             if (_tcsicmp(pCurrFile->cFileName, "start.dat") == 0)
             {
                 std::string directoryPath = decryptPath;
-                directoryPath.append("\\start.dat_dir");
+                directoryPath.append("start.dat_dir");
                 CreateDirectory(directoryPath.c_str(), nullptr);
                 CSerializer startfile(filePath.c_str());
                 uint32_t uFileCount = 0;
@@ -583,44 +635,7 @@ void HandleDirectory(const SDirectory* directory)
             }
             else if (_tcsicmp(pCurrFile->cFileName, "STORY.DAT") == 0)
             {
-                CSerializer storyFile(filePath.c_str());
-                uint32_t uDataIndex = 0;
-                storyFile >> uDataIndex;
-                uint32_t uDataCount = 0;
-                storyFile >> uDataCount;
-                std::map<uint32_t, std::pair<uint32_t, uint32_t> > recordMap;
-                uint32_t* pLengthDataAddress = nullptr;
-                uint32_t uLastAddress = 0;
-                for (size_t i = 0; i < uDataCount; ++i) 
-                {
-                    uint32_t uDataIndex, uStartAddress;
-                    storyFile >> uDataIndex >> uStartAddress;
-                    BEATS_ASSERT(recordMap.find(uDataIndex) == recordMap.end());
-                    recordMap[uDataIndex] = std::make_pair(uStartAddress, 0);
-                    if (pLengthDataAddress != nullptr)
-                    {
-                        BEATS_ASSERT(uStartAddress > uLastAddress);
-                        *pLengthDataAddress = uStartAddress - uLastAddress;
-                    }
-                    pLengthDataAddress = &recordMap[uDataIndex].second;
-                    uLastAddress = uStartAddress;
-                }
-                *pLengthDataAddress = storyFile.GetWritePos() - uLastAddress;
-                CSerializer textFile;
-                for (auto iter = recordMap.begin(); iter != recordMap.end(); ++iter)
-                {
-                    textFile.Reset();
-                    storyFile.SetReadPos(iter->second.first);
-                    storyFile.Deserialize(textFile, iter->second.second);
-                    std::string strInput((const char*)textFile.GetBuffer(), textFile.GetWritePos());
-                    std::string output;
-                    ConvertString(fd, strInput, output);
-                    char szBuffer[MAX_PATH];
-                    _stprintf(szBuffer, "C:/testText/%d.txt", iter->first);
-                    FILE* pFile = _tfopen(szBuffer, "wb+");
-                    fwrite(output.c_str(), 1, output.length() + 1, pFile);
-                    fclose(pFile);
-                }
+                ExtractStoryData(filePath.c_str());
             }
             else if (_tcsicmp(pCurrFile->cFileName, "LOGIC.DAT") == 0)
             {
