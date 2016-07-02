@@ -25,6 +25,7 @@ struct STranslateRecord
     std::string m_strOriginStr;
     std::string m_strProcessedStr;
 };
+void HandleDirectory(const SDirectory* directory);
 
 std::string FilterControlCharacter(const std::string& strOri)
 {
@@ -529,10 +530,86 @@ void PackStoryData()
 
 }
 
+void ExtractStartData(const std::string& filePath, const std::string& decryptPath)
+{
+    CreateDirectory(decryptPath.c_str(), nullptr);
+    CSerializer startfile(filePath.c_str());
+    uint32_t uFileCount = 0;
+    startfile >> uFileCount;
+    std::map<uint32_t, std::map<std::string, uint32_t>> fileLocationInfo;
+    for (uint32_t i = 0; i < uFileCount; ++i)
+    {
+        char szFileName[16] = {0};
+        startfile.Deserialize(szFileName, 16);
+        uint32_t uDataAddress = 0;
+        startfile >> uDataAddress;
+        uint32_t uDataLength = 0;
+        startfile >> uDataLength;
+        std::map<std::string, uint32_t> filerecord;
+        filerecord[szFileName] = uDataLength;
+        fileLocationInfo[uDataAddress] = filerecord;
+    }
+    for (auto iter = fileLocationInfo.begin(); iter != fileLocationInfo.end(); ++iter)
+    {
+        startfile.SetReadPos(iter->first);
+        std::string filePath = decryptPath;
+        filePath.append("/").append(iter->second.begin()->first);
+        CSerializer newFile;
+        startfile.Deserialize(newFile, iter->second.begin()->second);
+        newFile.Deserialize(filePath.c_str());
+    }
+    std::string storyDataPath = decryptPath;
+    storyDataPath.append("/story.dat");
+    ExtractStoryData(storyDataPath.c_str());
+    //SDirectory starDirectory(nullptr, directoryPath.c_str());
+    //CUtilityManager::GetInstance()->FillDirectory(starDirectory, true);
+    //HandleDirectory(&starDirectory);
+}
+
+void PackStartData(const std::string& originfilePath, const std::string& decryptPath)
+{
+    CSerializer originData(originfilePath.c_str());
+    CSerializer ret;
+    uint32_t uFileCount = 0;
+    originData >> uFileCount;
+    ret << uFileCount;
+    std::map<uint32_t, std::map<std::string, uint32_t>> fileLocationInfo;
+    for (uint32_t i = 0; i < uFileCount; ++i)
+    {
+        char szFileName[16] = { 0 };
+        originData.Deserialize(szFileName, 16);
+        ret.Serialize(szFileName, 16);
+        uint32_t uDataAddress = 0;
+        originData >> uDataAddress;
+        ret << uDataAddress;
+        uint32_t uDataLength = 0;
+        originData >> uDataLength;
+        ret << uDataLength;
+        std::map<std::string, uint32_t> filerecord;
+        filerecord[szFileName] = uDataLength;
+        fileLocationInfo[uDataAddress] = filerecord;
+    }
+    ret << 0 << 0 << 0;//padding 12 bytes 0.
+    for (auto iter = fileLocationInfo.begin(); iter != fileLocationInfo.end(); ++iter)
+    {
+        std::string filePath = decryptPath;
+        filePath.append("/").append(iter->second.begin()->first);
+        BEATS_ASSERT(ret.GetWritePos() == iter->first);
+        ret.Serialize(filePath.c_str(), "rb");
+    }
+    BEATS_ASSERT(ret.GetWritePos() == originData.GetWritePos());
+    std::string encrypt = CStringHelper::GetInstance()->ReplaceString(originfilePath, "Origin", "Encrypt");
+    std::string encryptDirectory = CFilePathTool::GetInstance()->ParentPath(encrypt.c_str());
+    CFilePathTool::GetInstance()->MakeDirectory(encryptDirectory.c_str());
+    ret.Deserialize(encrypt.c_str());
+}
+
 void HandleDirectory(const SDirectory* directory)
 {
     std::string decryptPath = CStringHelper::GetInstance()->ReplaceString(directory->m_szPath, "Origin", "Decrypt");
+    std::string encryptPath = CStringHelper::GetInstance()->ReplaceString(directory->m_szPath, "Origin", "Encrypt");
     CFilePathTool::GetInstance()->MakeDirectory(decryptPath.c_str());
+    CFilePathTool::GetInstance()->MakeDirectory(encryptPath.c_str());
     for (size_t i = 0; i < directory->m_pFileList->size(); ++i)
     {
         TFileData* pCurrFile = directory->m_pFileList->at(i);
@@ -550,49 +627,7 @@ void HandleDirectory(const SDirectory* directory)
         {
             if (_tcsicmp(pCurrFile->cFileName, "start.dat") == 0)
             {
-                std::string directoryPath = decryptPath;
-                directoryPath.append("start.dat_dir");
-                CreateDirectory(directoryPath.c_str(), nullptr);
-                CSerializer startfile(filePath.c_str());
-                uint32_t uFileCount = 0;
-                startfile >> uFileCount;
-                std::map<uint32_t, std::map<std::string, uint32_t>> fileLocationInfo;
-                for (uint32_t i = 0; i < uFileCount; ++i)
-                {
-                    std::string strFileName;
-                    startfile >> strFileName;
-                    uint32_t ualignCount = startfile.GetReadPos() % 4;
-                    if (ualignCount > 0)
-                    {
-                        startfile.SetReadPos(startfile.GetReadPos() + 4 - ualignCount);
-                    }
-                    uint32_t uDataAddress = 0;
-                    while (true) // Sometimes it will align 4 more bytes, don't know why
-                    {
-                        startfile >> uDataAddress;
-                        if (uDataAddress != 0)
-                        {
-                            break;
-                        }
-                    }
-                    uint32_t uDataLength = 0;
-                    startfile >> uDataLength;
-                    std::map<std::string, uint32_t> filerecord;
-                    filerecord[strFileName] = uDataLength;
-                    fileLocationInfo[uDataAddress] = filerecord;
-                }
-                for (auto iter = fileLocationInfo.begin(); iter != fileLocationInfo.end(); ++iter)
-                {
-                    startfile.SetReadPos(iter->first);
-                    std::string filePath = directoryPath;
-                    filePath.append("\\").append(iter->second.begin()->first);
-                    CSerializer newFile;
-                    startfile.Deserialize(newFile, iter->second.begin()->second);
-                    newFile.Deserialize(filePath.c_str());
-                }
-                SDirectory starDirectory(nullptr, directoryPath.c_str());
-                CUtilityManager::GetInstance()->FillDirectory(starDirectory, true);
-                HandleDirectory(&starDirectory);
+                ExtractStartData(filePath, decryptPath);
             }
             else if (_tcsicmp(pCurrFile->cFileName, "upload00.dat") == 0)
             {
@@ -737,10 +772,14 @@ void HandleDirectory(const SDirectory* directory)
             }
         }
         ++uHandledFileCount;
-        uint32_t curProgress = uHandledFileCount * 100 / uTotalFileCount;
-        if (curProgress > 100)
+        uint32_t curProgress = 100;
+        if (uTotalFileCount > 0)
         {
-            curProgress = 100;
+            curProgress = uHandledFileCount * 100 / uTotalFileCount;
+            if (curProgress > 100)
+            {
+                curProgress = 100;
+            }
         }
         system("cls");
         printf("当前进度：%d%%    请稍等。。。", curProgress);
