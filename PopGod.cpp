@@ -257,7 +257,7 @@ void ExportPalette(CSerializer& serializer, const std::string& strOutputFileName
 {
     CSerializer paletteData;
     int32_t uWidth = 256;
-    int32_t uHeight = 256;
+    int32_t uHeight = -256; // Inverse the image, use negative number.
     BITMAPFILEHEADER header;
     memset(&header, 0, sizeof(header));
     header.bfType = 19778;
