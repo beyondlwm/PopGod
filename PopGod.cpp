@@ -5,11 +5,14 @@
 #include "iconv.h"
 #include <algorithm>
 #include <shlwapi.h>
+#include <direct.h>
 
 uint32_t uTotalFileCount = 0;
 uint32_t uHandledFileCount = 0;
 uint32_t uProcessProgress = 0;
 iconv_t fd = 0;
+HWND BEYONDENGINE_HWND = nullptr;
+std::vector<TString> g_registeredSingleton;
 struct STranslateRecord
 {
     uint16_t m_uLength = 0;
@@ -254,7 +257,7 @@ void ExportPalette(CSerializer& serializer, const std::string& strOutputFileName
 {
     CSerializer paletteData;
     int32_t uWidth = 256;
-    int32_t uHeight = -256;
+    int32_t uHeight = 256;
     BITMAPFILEHEADER header;
     memset(&header, 0, sizeof(header));
     header.bfType = 19778;
@@ -747,7 +750,7 @@ int _tmain(int argc, _TCHAR* argv[])
     {
         TCHAR szBuffer[MAX_PATH];
         GetCurrentDirectory(MAX_PATH, szBuffer);
-        ExtractWholeProject("D:\\PSP_crack\\psp\\Hayarigami_Portable_Keishichou_Kaii_Jiken_JNP");
+        ExtractWholeProject("D:\\PSP_crack\\psp\\Origin");
         printf("解包完成。");
         system("pause");
 
