@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <shlwapi.h>
 #include <direct.h>
+#include "ControlCode.h"
 
 uint32_t uTotalFileCount = 0;
 uint32_t uHandledFileCount = 0;
@@ -14,7 +15,6 @@ uint32_t uProcessProgress = 0;
 iconv_t fd = 0;
 HWND BEYONDENGINE_HWND = nullptr;
 std::vector<TString> g_registeredSingleton;
-
 static const std::string strOriginPath = "D:/PSP_crack/psp/Origin";
 static const std::string strDecryptPath = "D:/PSP_crack/psp/Decrypt";
 static const std::string strEncryptPath = "D:/PSP_crack/psp/Encrypt";
@@ -25,6 +25,7 @@ struct STranslateRecord
     std::string m_strOriginStr;
     std::string m_strProcessedStr;
 };
+
 void HandleDirectory(const SDirectory* directory);
 
 std::string FilterControlCharacter(const std::string& strOri)
@@ -49,6 +50,46 @@ std::string FilterControlCharacter(const std::string& strOri)
         }
     }
     return ret;
+}
+
+void ConvertBufferToString(iconv_t fd, CSerializer& serializerData, TString& strOut)
+{
+    while (serializerData.GetReadPos() < serializerData.GetWritePos() )
+    {
+        uint32_t uReadPos = serializerData.GetReadPos();
+        unsigned char* pFirstData = (unsigned char*)serializerData.GetReadPtr();
+        uint32_t uTryControlCode = *(uint32_t*)serializerData.GetReadPtr();
+        uTryControlCode = BEYONDENGINE_SWAP32(uTryControlCode);
+        if (controlCodeMap.find(uTryControlCode) != controlCodeMap.end())
+        {
+            uint32_t uControlCode = 0;
+            serializerData >> uControlCode;
+            uControlCode = BEYONDENGINE_SWAP32(uControlCode);
+            BEATS_ASSERT(uControlCode == uTryControlCode);
+            serializerData.SetReadPos(serializerData.GetReadPos() + controlCodeMap[uControlCode]->GetParamSize());
+        }
+        else
+        {
+            if (*pFirstData != 0)
+            {
+                BEATS_ASSERT(*pFirstData != 0xff, "Meet unknown control code %p", uTryControlCode);
+                unsigned char inputBuffer[2];
+                inputBuffer[0] = ~pFirstData[0];
+                inputBuffer[1] = ~pFirstData[1];
+                char szBuffer[3];
+                const char* pReader = (const char*)inputBuffer;
+                uint32_t uLeftBytes = 2;
+                char* pWriter = szBuffer;
+                uint32_t uWriteLeft = 2;
+                iconv(fd, &pReader, &uLeftBytes, &pWriter, &uWriteLeft);
+                szBuffer[2] = 0;
+                BEATS_ASSERT(_tcslen(szBuffer) != 0);
+                strOut.append(szBuffer);
+            }
+            uint16_t skipData;
+            serializerData >> skipData;
+        }
+    }
 }
 
 void ConvertString(iconv_t fd, const std::string& rawString, std::string& output, bool bWriteControlCode = false)
@@ -481,9 +522,45 @@ void ConvertFontToBmp(CSerializer& fontFile, const std::string& outputFileName)
 void ExtractStoryData(const char* pszStoryDataFile)
 {
     CSerializer storyFile(pszStoryDataFile);
+    uint32_t uCode = 0;
+    SBufferData startData;
+    uint32_t uStartCode = BEYONDENGINE_SWAP32(0xFF0A0300);
+    startData.pData = &uStartCode;
+    startData.dataLength = 4;
+
+    SBufferData endData;
+    uint32_t uEndCode = BEYONDENGINE_SWAP32(0xFF040400);
+    endData.pData = &uEndCode;
+    endData.dataLength = 4;
+    CSerializer text;
+    while (storyFile.GetReadPos() < storyFile.GetWritePos())
+    {
+        uint32_t uStartPos = storyFile.ReadToData(startData, false);
+        if (uStartPos == storyFile.GetWritePos())
+        {
+            break;
+        }
+        uint32_t tmp;
+        storyFile >> tmp >> tmp >> tmp;
+        uStartPos += 12;
+        uint32_t uEndPos = storyFile.ReadToData(endData, false);
+        if (uEndPos > uStartPos)
+        {
+            CSerializer inputData;
+            inputData.Serialize(storyFile.GetBuffer() + uStartPos, uEndPos - uStartPos);
+            std::string outStr;
+            ConvertBufferToString(fd, inputData, outStr);
+            TCHAR szLocBuffer[1024];
+            _stprintf(szLocBuffer, "0x%p %d %s\n", uStartPos, outStr.length(), outStr.c_str());
+            text << szLocBuffer;
+            //text.SetWritePos(text.GetWritePos() - 1);
+        }
+    }
+    text.Deserialize("C:/1.txt", "wb+");
     uint32_t uDataIndex = 0;
-    storyFile >> uDataIndex;
     uint32_t uDataCount = 0;
+    uint32_t uUnknownHead = 0;
+    storyFile >> uUnknownHead;
     storyFile >> uDataCount;
     std::map<uint32_t, std::pair<uint32_t, uint32_t> > recordMap;
     uint32_t* pLengthDataAddress = nullptr;
@@ -532,7 +609,7 @@ void PackStoryData()
 
 void ExtractStartData(const std::string& filePath, const std::string& decryptPath)
 {
-    CreateDirectory(decryptPath.c_str(), nullptr);
+    CFilePathTool::GetInstance()->MakeDirectory(decryptPath.c_str());
     CSerializer startfile(filePath.c_str());
     uint32_t uFileCount = 0;
     startfile >> uFileCount;
@@ -811,9 +888,15 @@ void ExtractWholeProject(const std::string& strProjectPath)
 
 int _tmain(int argc, _TCHAR* argv[])
 {
+    RegisterAllControlCode();
     fd = iconv_open("", "SHIFT_JIS");
     if (fd != (iconv_t)0xFFFFFFFF)
     {
+        ExtractStartData("D:/PSP_crack/psp/Origin/PSP_GAME/USRDIR/start.dat",
+            "D:/PSP_crack/psp/Decrypt/PSP_GAME/USRDIR/start.dat_dir");
+        //PackStartData("D:/PSP_crack/psp/Origin/PSP_GAME/USRDIR/start.dat", "D:/PSP_crack/psp/Decrypt/PSP_GAME/USRDIR/start.dat_dir");
+
+        return 0;
         TCHAR szBuffer[MAX_PATH];
         GetCurrentDirectory(MAX_PATH, szBuffer);
         ExtractWholeProject(strOriginPath);
