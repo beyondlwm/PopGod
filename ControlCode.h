@@ -356,6 +356,126 @@ public:
 
 };
 
+class CUnknown21 : public CControlCode
+{
+public:
+    CUnknown21(){};
+    virtual ~CUnknown21(){};
+
+    virtual uint32_t GetParamSize() override { return 4; };
+    virtual uint32_t GetCode() override { return 0xFF082103; };
+    virtual TString GetDesc() override { return "[δ֪21]"; };
+
+};
+
+class CUnknown22 : public CControlCode
+{
+public:
+    CUnknown22(){};
+    virtual ~CUnknown22(){};
+
+    virtual uint32_t GetParamSize() override { return 0; };
+    virtual uint32_t GetCode() override { return 0xFF046b00; };
+    virtual TString GetDesc() override { return "[δ֪22]"; };
+
+};
+
+class CUnknown23 : public CControlCode
+{
+public:
+    CUnknown23(){};
+    virtual ~CUnknown23(){};
+
+    virtual uint32_t GetParamSize() override { return 4; };
+    virtual uint32_t GetCode() override { return 0xFF167905; };
+    virtual TString GetDesc() override { return "[δ֪23]"; };
+
+};
+
+class CUnknown24 : public CControlCode
+{
+public:
+    CUnknown24(){};
+    virtual ~CUnknown24(){};
+
+    virtual uint32_t GetParamSize() override { return 4; };
+    virtual uint32_t GetCode() override { return 0xFF1A7905; };
+    virtual TString GetDesc() override { return "[δ֪24]"; };
+
+};
+
+class CUnknown25 : public CControlCode
+{
+public:
+    CUnknown25(){};
+    virtual ~CUnknown25(){};
+
+    virtual uint32_t GetParamSize() override { return 0; };
+    virtual uint32_t GetCode() override { return 0xFF14D000; };
+    virtual TString GetDesc() override { return "[δ֪25]"; };
+
+}; 
+
+class CUnknown26 : public CControlCode
+{
+public:
+    CUnknown26(){};
+    virtual ~CUnknown26(){};
+
+    virtual uint32_t GetParamSize() override { return 0; };
+    virtual uint32_t GetCode() override { return 0xFF046600; };
+    virtual TString GetDesc() override { return "[δ֪26]"; };
+
+}; 
+
+class CUnknown27 : public CControlCode
+{
+public:
+    CUnknown27(){};
+    virtual ~CUnknown27(){};
+
+    virtual uint32_t GetParamSize() override { return 8; };
+    virtual uint32_t GetCode() override { return 0xFF0C6800; };
+    virtual TString GetDesc() override { return "[δ֪27]"; };
+
+};
+
+class CUnknown28 : public CControlCode
+{
+public:
+    CUnknown28(){};
+    virtual ~CUnknown28(){};
+
+    virtual uint32_t GetParamSize() override { return 4; };
+    virtual uint32_t GetCode() override { return 0xFF06D600; };
+    virtual TString GetDesc() override { return "[δ֪28]"; };
+
+};
+
+class CUnknown29 : public CControlCode
+{
+public:
+    CUnknown29(){};
+    virtual ~CUnknown29(){};
+
+    virtual uint32_t GetParamSize() override { return 4; };
+    virtual uint32_t GetCode() override { return 0xFF06D900; };
+    virtual TString GetDesc() override { return "[δ֪29]"; };
+
+};
+
+class CUnknown30 : public CControlCode
+{
+public:
+    CUnknown30(){};
+    virtual ~CUnknown30(){};
+
+    virtual uint32_t GetParamSize() override { return 0; };
+    virtual uint32_t GetCode() override { return 0xFF046900; };
+    virtual TString GetDesc() override { return "[δ֪30]"; };
+
+};
+
 void RegisterControlCode(CControlCode* pCode)
 {
     BEATS_ASSERT(controlCodeMap.find(pCode->GetCode()) == controlCodeMap.end());
@@ -393,4 +513,14 @@ void RegisterAllControlCode()
     RegisterControlCode(new CUnknown18);
     RegisterControlCode(new CUnknown19);
     RegisterControlCode(new CUnknown20);
+    RegisterControlCode(new CUnknown21);
+    RegisterControlCode(new CUnknown22);
+    RegisterControlCode(new CUnknown23);
+    RegisterControlCode(new CUnknown24);
+    RegisterControlCode(new CUnknown25);
+    RegisterControlCode(new CUnknown26);
+    RegisterControlCode(new CUnknown27);
+    RegisterControlCode(new CUnknown28);
+    RegisterControlCode(new CUnknown29);
+    RegisterControlCode(new CUnknown30);
 }

@@ -13,8 +13,10 @@ uint32_t uTotalFileCount = 0;
 uint32_t uHandledFileCount = 0;
 uint32_t uProcessProgress = 0;
 iconv_t fd = 0;
+iconv_t packfd = 0;
 HWND BEYONDENGINE_HWND = nullptr;
 std::vector<TString> g_registeredSingleton;
+std::set<uint32_t> test;
 static const std::string strOriginPath = "D:/PSP_crack/psp/Origin";
 static const std::string strDecryptPath = "D:/PSP_crack/psp/Decrypt";
 static const std::string strEncryptPath = "D:/PSP_crack/psp/Encrypt";
@@ -27,6 +29,7 @@ struct STranslateRecord
 };
 
 void HandleDirectory(const SDirectory* directory);
+void PackStartData(const std::string& originfilePath, const std::string& decryptPath);
 
 std::string FilterControlCharacter(const std::string& strOri)
 {
@@ -52,6 +55,49 @@ std::string FilterControlCharacter(const std::string& strOri)
     return ret;
 }
 
+bool IsCharOK(unsigned char first, unsigned char second)
+{
+    bool bRet = true;
+    if (first == 0x7e && second == 0xba)
+    {
+        bRet = false;
+    }
+    if (first == 0x78 && second == 0x79)
+    {
+        bRet = false;
+    }
+    if (first == 0x78 && second == 0x78)
+    {
+        bRet = false;
+    }
+    if (first == 0x78 && second == 0x7a)
+    {
+        bRet = false;
+    }
+    if (first == 0x78 && second == 0x76)
+    {
+        bRet = false;
+    }
+    if (first == 0x78 && second == 0x77)
+    {
+        bRet = false;
+    }
+
+    if (first == 0x7e && second == 0x9f)
+    {
+        bRet = false;
+    }
+    if (first == 0x7e && second == 0x83)
+    {
+        bRet = false;
+    }
+    if (first == 0x7e && second == 0x0b)
+    {
+        bRet = false;
+    }
+    return bRet;
+}
+
 void ConvertBufferToString(iconv_t fd, CSerializer& serializerData, TString& strOut)
 {
     while (serializerData.GetReadPos() < serializerData.GetWritePos() )
@@ -60,34 +106,84 @@ void ConvertBufferToString(iconv_t fd, CSerializer& serializerData, TString& str
         unsigned char* pFirstData = (unsigned char*)serializerData.GetReadPtr();
         uint32_t uTryControlCode = *(uint32_t*)serializerData.GetReadPtr();
         uTryControlCode = BEYONDENGINE_SWAP32(uTryControlCode);
-        if (controlCodeMap.find(uTryControlCode) != controlCodeMap.end())
+        if (*pFirstData == 0xFF)
         {
-            uint32_t uControlCode = 0;
-            serializerData >> uControlCode;
-            uControlCode = BEYONDENGINE_SWAP32(uControlCode);
-            BEATS_ASSERT(uControlCode == uTryControlCode);
-            serializerData.SetReadPos(serializerData.GetReadPos() + controlCodeMap[uControlCode]->GetParamSize());
+            unsigned char* pSecondData = pFirstData + 1;
+            uint32_t uDataLength = *pSecondData;
+            if ((uDataLength % 4) != 0)
+            {
+                uDataLength += (4 - uDataLength % 4);
+            }
+            serializerData.SetReadPos(serializerData.GetReadPos() + uDataLength);
+            strOut.append("$");
         }
         else
         {
-            if (*pFirstData != 0)
+            CSerializer buffer;
+            while (*pFirstData != 0xff && serializerData.GetReadPos() != serializerData.GetWritePos())
             {
-                BEATS_ASSERT(*pFirstData != 0xff, "Meet unknown control code %p", uTryControlCode);
-                unsigned char inputBuffer[2];
-                inputBuffer[0] = ~pFirstData[0];
-                inputBuffer[1] = ~pFirstData[1];
-                char szBuffer[3];
-                const char* pReader = (const char*)inputBuffer;
-                uint32_t uLeftBytes = 2;
-                char* pWriter = szBuffer;
-                uint32_t uWriteLeft = 2;
-                iconv(fd, &pReader, &uLeftBytes, &pWriter, &uWriteLeft);
-                szBuffer[2] = 0;
-                BEATS_ASSERT(_tcslen(szBuffer) != 0);
-                strOut.append(szBuffer);
+                serializerData.Deserialize(buffer, 4);
+                pFirstData = (unsigned char*)serializerData.GetReadPtr();
             }
-            uint16_t skipData;
-            serializerData >> skipData;
+            for (size_t k = 0; k < buffer.GetWritePos();)
+            {
+                unsigned char* pszData = (unsigned char*)buffer.GetBuffer();
+                if (pszData[k] == 0xdf || ((k+1) == buffer.GetWritePos() ))
+                {
+                    if (pszData[k] != 0)
+                    {
+                        pszData[k] = ~pszData[k];
+                    }
+                    ++k;
+                }
+                else
+                {
+                    if (!IsCharOK(pszData[k], pszData[k + 1]))
+                    {
+                        pszData[k] = 0xdf;
+                        pszData[k + 1] = 0xdf;
+                    }
+                    if (pszData[k] != 0)
+                    {
+                        pszData[k] = ~pszData[k];
+                    }
+                    if (pszData[k + 1] != 0)
+                    {
+                        pszData[k + 1] = ~pszData[k+1];
+                    }
+                    k += 2;
+                }
+            }
+
+            TCHAR szBuffer[10240];
+            memset(szBuffer, 0xFF, 10240);
+            const char* pReader = (const char*)buffer.GetBuffer();
+            uint32_t uTextSize = buffer.GetWritePos();
+            char* pWriter = szBuffer;
+            uint32_t uWriteLeft = 10240;
+            uint32_t uLeftBytes = uTextSize;
+            iconv(fd, &pReader, &uLeftBytes, &pWriter, &uWriteLeft);
+            uint32_t uWriteSize = 10240 - uWriteLeft;
+            szBuffer[uWriteSize] = 0;
+            BEATS_ASSERT(uLeftBytes == 0);
+            BEATS_ASSERT(uWriteSize == uTextSize);
+            std::vector<char*> hackPtrList;
+            for (size_t i = 0; i < uWriteSize; ++i)
+            {
+                if (szBuffer[i] == 0 && i != uWriteSize - 1)
+                {
+                    hackPtrList.push_back(&szBuffer[i]);
+                }
+                if (szBuffer[i] != 0)
+                {
+                    for (size_t j = 0; j < hackPtrList.size(); ++j)
+                    {
+                        *hackPtrList[j] = 0x20;
+                    }
+                    hackPtrList.clear();
+                }
+            }
+            strOut.append(szBuffer);
         }
     }
 }
@@ -519,6 +615,84 @@ void ConvertFontToBmp(CSerializer& fontFile, const std::string& outputFileName)
     bmpFile.Deserialize(outputFileName.c_str());
 }
 
+
+void PackStoryData(const char* pszStoryDataFile)
+{
+    CSerializer storyFile(pszStoryDataFile);
+    CSerializer packData;
+    CSerializer textData("C:/1.txt");
+    textData << (char)0;
+    std::vector<TString> lines;
+    CStringHelper::GetInstance()->SplitString((const char*)textData.GetBuffer(), "\n", lines, false);
+    for (size_t i = 0; i < lines.size(); ++i)
+    {
+        const TString& strValue = lines[i];
+        const char* pszReader = strValue.c_str();
+        char szAddr[16] = { 0 };
+        memcpy(szAddr, pszReader, 10);
+        TCHAR* pEndChar = NULL;
+        uint32_t uValue = _tcstoul(szAddr, &pEndChar, 16);
+        pszReader += 11;
+        BEATS_ASSERT(uValue != 0 && uValue >storyFile.GetReadPos());
+        storyFile.Deserialize(packData, uValue - storyFile.GetReadPos());
+        BEATS_ASSERT(storyFile.GetReadPos() == uValue);
+
+        while (*pszReader != 0)
+        {
+            TString strCache;
+            const char* pEndReader = strstr(pszReader, "$");
+            if (pEndReader != nullptr)
+            {
+                uint32_t uCount = pEndReader - pszReader;
+                strCache.append(pszReader, uCount);
+                pszReader = pEndReader + 1;
+            }
+            else
+            {
+                strCache = pszReader;
+                pszReader += strCache.length();
+            }
+            TCHAR szBuffer[10240];
+            const char* pReader = (const char*)strCache.c_str();
+            uint32_t uLeftBytes = strCache.length() + 1;
+            char* pWriter = szBuffer;
+            uint32_t uWriteLeft = 10240;
+            iconv(packfd, &pReader, &uLeftBytes, &pWriter, &uWriteLeft);
+            uint32_t uLength = 10240 - uWriteLeft;
+            for (size_t i = 0; i < uLength - 1; ++i)
+            {
+                unsigned char tmp = ~szBuffer[i];
+                packData << tmp;
+            }
+            if (packData.GetWritePos() % 4 != 0)
+            {
+                uint32_t uPaddingDataLength = (4 - packData.GetWritePos() % 4);
+                char paddingData = 0;
+                for (size_t z = 0; z < uPaddingDataLength; ++z)
+                {
+                    packData << paddingData;
+                }
+            }
+            while (*(unsigned char*)storyFile.GetReadPtr() != 0xFF)
+            {
+                uint32_t uSkipData;
+                storyFile >> uSkipData;
+            }
+            if (*(unsigned char*)storyFile.GetReadPtr() == 0xFF)
+            {
+                unsigned char* pSecondData = (unsigned char*)storyFile.GetReadPtr() + 1;
+                uint32_t uDataLength = *pSecondData;
+                if ((uDataLength % 4) != 0)
+                {
+                    uDataLength += (4 - uDataLength % 4);
+                }
+                storyFile.Deserialize(packData, uDataLength);
+            }
+        }
+    }
+    packData.Deserialize("C:/packStory.dat");
+}
+
 void ExtractStoryData(const char* pszStoryDataFile)
 {
     CSerializer storyFile(pszStoryDataFile);
@@ -540,9 +714,8 @@ void ExtractStoryData(const char* pszStoryDataFile)
         {
             break;
         }
-        uint32_t tmp;
-        storyFile >> tmp >> tmp >> tmp;
         uStartPos += 12;
+        storyFile.SetReadPos(uStartPos);
         uint32_t uEndPos = storyFile.ReadToData(endData, false);
         if (uEndPos > uStartPos)
         {
@@ -551,60 +724,12 @@ void ExtractStoryData(const char* pszStoryDataFile)
             std::string outStr;
             ConvertBufferToString(fd, inputData, outStr);
             TCHAR szLocBuffer[1024];
-            _stprintf(szLocBuffer, "0x%p %d %s\n", uStartPos, outStr.length(), outStr.c_str());
+            _stprintf(szLocBuffer, "0x%p %s\n", uStartPos, outStr.c_str());
             text << szLocBuffer;
-            //text.SetWritePos(text.GetWritePos() - 1);
+            text.SetWritePos(text.GetWritePos() - 1);
         }
     }
     text.Deserialize("C:/1.txt", "wb+");
-    uint32_t uDataIndex = 0;
-    uint32_t uDataCount = 0;
-    uint32_t uUnknownHead = 0;
-    storyFile >> uUnknownHead;
-    storyFile >> uDataCount;
-    std::map<uint32_t, std::pair<uint32_t, uint32_t> > recordMap;
-    uint32_t* pLengthDataAddress = nullptr;
-    uint32_t uLastAddress = 0;
-    for (size_t i = 0; i < uDataCount; ++i)
-    {
-        uint32_t uDataIndex, uStartAddress;
-        storyFile >> uDataIndex >> uStartAddress;
-        BEATS_ASSERT(recordMap.find(uDataIndex) == recordMap.end());
-        recordMap[uDataIndex] = std::make_pair(uStartAddress, 0);
-        if (pLengthDataAddress != nullptr)
-        {
-            BEATS_ASSERT(uStartAddress > uLastAddress);
-            *pLengthDataAddress = uStartAddress - uLastAddress;
-        }
-        pLengthDataAddress = &recordMap[uDataIndex].second;
-        uLastAddress = uStartAddress;
-    }
-    *pLengthDataAddress = storyFile.GetWritePos() - uLastAddress;
-    CSerializer textFile;
-    TString strDecryptPath = CStringHelper::GetInstance()->ReplaceString(pszStoryDataFile, "Origin", "Decrypt");
-    strDecryptPath.append("_dir/");
-    CreateDirectory(strDecryptPath.c_str(), nullptr);
-    for (auto iter = recordMap.begin(); iter != recordMap.end(); ++iter)
-    {
-        textFile.Reset();
-        storyFile.SetReadPos(iter->second.first);
-        storyFile.Deserialize(textFile, iter->second.second);
-        std::string strInput((const char*)textFile.GetBuffer(), textFile.GetWritePos());
-        std::string output;
-        ConvertString(fd, strInput, output);
-        char szBuffer[MAX_PATH];
-        std::string filePath = strDecryptPath;
-        filePath.append("%d.txt");
-        _stprintf(szBuffer, filePath.c_str(), iter->first);
-        FILE* pFile = _tfopen(szBuffer, "wb+");
-        fwrite(output.c_str(), 1, output.length() + 1, pFile);
-        fclose(pFile);
-    }
-}
-
-void PackStoryData()
-{
-
 }
 
 void ExtractStartData(const std::string& filePath, const std::string& decryptPath)
@@ -651,6 +776,7 @@ void PackStartData(const std::string& originfilePath, const std::string& decrypt
     originData >> uFileCount;
     ret << uFileCount;
     std::map<uint32_t, std::map<std::string, uint32_t>> fileLocationInfo;
+    std::map<TString, uint32_t> revertMap;
     for (uint32_t i = 0; i < uFileCount; ++i)
     {
         char szFileName[16] = { 0 };
@@ -662,6 +788,7 @@ void PackStartData(const std::string& originfilePath, const std::string& decrypt
         uint32_t uDataLength = 0;
         originData >> uDataLength;
         ret << uDataLength;
+        revertMap[szFileName] = i;
         std::map<std::string, uint32_t> filerecord;
         filerecord[szFileName] = uDataLength;
         fileLocationInfo[uDataAddress] = filerecord;
@@ -669,12 +796,23 @@ void PackStartData(const std::string& originfilePath, const std::string& decrypt
     ret << 0 << 0 << 0;//padding 12 bytes 0.
     for (auto iter = fileLocationInfo.begin(); iter != fileLocationInfo.end(); ++iter)
     {
+        TString strName = iter->second.begin()->first;
         std::string filePath = decryptPath;
-        filePath.append("/").append(iter->second.begin()->first);
-        BEATS_ASSERT(ret.GetWritePos() == iter->first);
+        filePath.append("/").append(strName);
+        BEATS_ASSERT(revertMap.find(strName) != revertMap.end());
+        uint32_t uNewPos = ret.GetWritePos();
         ret.Serialize(filePath.c_str(), "rb");
+        uint32_t uNewSize = ret.GetWritePos() - uNewPos;
+        uint32_t uRecordWritePos = ret.GetWritePos();
+        uint32_t uIndex = revertMap[strName];
+        uint32_t uAddrOffset = 4 + (uIndex + 1) * 16 + uIndex * 8;
+        ret.SetWritePos(uAddrOffset);
+        uint32_t* pAddr = (uint32_t*)ret.GetWritePtr();
+        *pAddr = uNewPos;
+        ++pAddr;
+        *pAddr = uNewSize;
+        ret.SetWritePos(uRecordWritePos);
     }
-    BEATS_ASSERT(ret.GetWritePos() == originData.GetWritePos());
     std::string encrypt = CStringHelper::GetInstance()->ReplaceString(originfilePath, "Origin", "Encrypt");
     std::string encryptDirectory = CFilePathTool::GetInstance()->ParentPath(encrypt.c_str());
     CFilePathTool::GetInstance()->MakeDirectory(encryptDirectory.c_str());
@@ -890,7 +1028,8 @@ int _tmain(int argc, _TCHAR* argv[])
 {
     RegisterAllControlCode();
     fd = iconv_open("", "SHIFT_JIS");
-    if (fd != (iconv_t)0xFFFFFFFF)
+    packfd = iconv_open("SHIFT_JIS", "");
+    if (fd != (iconv_t)0xFFFFFFFF && packfd != (iconv_t)0xFFFFFFFF)
     {
         ExtractStartData("D:/PSP_crack/psp/Origin/PSP_GAME/USRDIR/start.dat",
             "D:/PSP_crack/psp/Decrypt/PSP_GAME/USRDIR/start.dat_dir");
