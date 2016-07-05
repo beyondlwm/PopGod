@@ -15,12 +15,10 @@ uint32_t uProcessProgress = 0;
 iconv_t fd = 0;
 iconv_t packfd = 0;
 HWND BEYONDENGINE_HWND = nullptr;
+TString strRootPath;
 std::vector<TString> g_registeredSingleton;
 std::map<unsigned short, TString> g_extractCodeMap;
 std::map<TString, unsigned short> g_packetCodeMap;
-static const std::string strOriginPath = "D:/PSP_crack/psp/Origin";
-static const std::string strDecryptPath = "D:/PSP_crack/psp/Decrypt";
-static const std::string strEncryptPath = "D:/PSP_crack/psp/Encrypt";
 struct STranslateRecord
 {
     uint16_t m_uLength = 0;
@@ -30,10 +28,12 @@ struct STranslateRecord
 };
 
 void HandleDirectory(const SDirectory* directory);
-void PackStartData(const std::string& originfilePath, const std::string& decryptPath);
+void PackStartData(const std::string& originfilePath);
 
 void LoadCodeMapData(const TString& strFilePath)
 {
+    g_extractCodeMap.clear();
+    g_packetCodeMap.clear();
     CSerializer data(strFilePath.c_str(), "rb");
     data << (char)0;
     std::string strCache;
@@ -638,7 +638,14 @@ void PackStoryData(const char* pszStoryDataFile)
 {
     CSerializer storyFile(pszStoryDataFile);
     CSerializer packData;
-    CSerializer textData("C:/1.txt");
+    TString strTxtFilePath = CFilePathTool::GetInstance()->ParentPath(pszStoryDataFile);
+    strTxtFilePath.append("/story.txt");
+    if (!CFilePathTool::GetInstance()->Exists(strTxtFilePath.c_str()))
+    {
+        printf("无法找到%s！请执行第2步！", strTxtFilePath.c_str());
+        return;
+    }
+    CSerializer textData(strTxtFilePath.c_str());
     textData << (char)0;
     std::vector<TString> lines;
     CStringHelper::GetInstance()->SplitString((const char*)textData.GetBuffer(), "\n", lines, false);
@@ -746,7 +753,9 @@ void PackStoryData(const char* pszStoryDataFile)
             }
         }
     }
-    packData.Deserialize("C:/packStory.dat");
+    TString strDecryptPath = CFilePathTool::GetInstance()->ParentPath(pszStoryDataFile);
+    strDecryptPath.append("/NewStory.dat");
+    packData.Deserialize(strDecryptPath.c_str());
 }
 
 void ExtractStoryData(const char* pszStoryDataFile)
@@ -798,7 +807,9 @@ void ExtractStoryData(const char* pszStoryDataFile)
             text.SetWritePos(text.GetWritePos() - 1);
         }
     }
-    text.Deserialize("C:/1.txt", "wb+");
+    TString strParentPath = CFilePathTool::GetInstance()->ParentPath(pszStoryDataFile);
+    strParentPath.append("/story.txt");
+    text.Deserialize(strParentPath.c_str(), "wb+");
 }
 
 void ExtractStartData(const std::string& filePath, const std::string& decryptPath)
@@ -831,7 +842,7 @@ void ExtractStartData(const std::string& filePath, const std::string& decryptPat
     }
 }
 
-void PackStartData(const std::string& originfilePath, const std::string& decryptPath)
+void PackStartData(const std::string& originfilePath)
 {
     CSerializer originData(originfilePath.c_str());
     CSerializer ret;
@@ -839,7 +850,7 @@ void PackStartData(const std::string& originfilePath, const std::string& decrypt
     originData >> uFileCount;
     ret << uFileCount;
     std::map<uint32_t, std::map<std::string, uint32_t>> fileLocationInfo;
-    std::map<TString, uint32_t> revertMap;
+    std::map<TString, uint32_t> revertMap;//because we may change the file size, so all the address and data size may change after we serialize.
     for (uint32_t i = 0; i < uFileCount; ++i)
     {
         char szFileName[16] = { 0 };
@@ -857,13 +868,30 @@ void PackStartData(const std::string& originfilePath, const std::string& decrypt
         fileLocationInfo[uDataAddress] = filerecord;
     }
     ret << 0 << 0 << 0;//padding 12 bytes 0.
+    TString decryptPath = CStringHelper::GetInstance()->ReplaceString(originfilePath, "PopGod", "Decrypt");
+    decryptPath = CFilePathTool::GetInstance()->ParentPath(decryptPath.c_str());
+    decryptPath.append("/start.dat_dir");
+    if (!CFilePathTool::GetInstance()->IsDirectory(decryptPath.c_str()))
+    {
+        printf("无法找到%s文件夹，请先执行第1步！", decryptPath.c_str());
+        return;
+    }
     for (auto iter = fileLocationInfo.begin(); iter != fileLocationInfo.end(); ++iter)
     {
         TString strName = iter->second.begin()->first;
+        BEATS_ASSERT(revertMap.find(strName) != revertMap.end());
         std::string filePath = decryptPath;
         filePath.append("/").append(strName);
-        BEATS_ASSERT(revertMap.find(strName) != revertMap.end());
         uint32_t uNewPos = ret.GetWritePos();
+        if (_tcsicmp(strName.c_str(), "story.dat") == 0)
+        {
+            TString newstoryfilePath = decryptPath;
+            newstoryfilePath.append("/newstory.dat");
+            if (CFilePathTool::GetInstance()->Exists(newstoryfilePath.c_str()))
+            {
+                filePath = newstoryfilePath;
+            }
+        }
         ret.Serialize(filePath.c_str(), "rb");
         uint32_t uNewSize = ret.GetWritePos() - uNewPos;
         uint32_t uRecordWritePos = ret.GetWritePos();
@@ -871,23 +899,20 @@ void PackStartData(const std::string& originfilePath, const std::string& decrypt
         uint32_t uAddrOffset = 4 + (uIndex + 1) * 16 + uIndex * 8;
         ret.SetWritePos(uAddrOffset);
         uint32_t* pAddr = (uint32_t*)ret.GetWritePtr();
-        *pAddr = uNewPos;
+        *pAddr = uNewPos; //update the new address
         ++pAddr;
-        *pAddr = uNewSize;
+        *pAddr = uNewSize;//update the new size
         ret.SetWritePos(uRecordWritePos);
     }
-    std::string encrypt = CStringHelper::GetInstance()->ReplaceString(originfilePath, "Origin", "Encrypt");
-    std::string encryptDirectory = CFilePathTool::GetInstance()->ParentPath(encrypt.c_str());
-    CFilePathTool::GetInstance()->MakeDirectory(encryptDirectory.c_str());
-    ret.Deserialize(encrypt.c_str());
+    TString output = CFilePathTool::GetInstance()->ParentPath(strRootPath.c_str());
+    output.append("/newstart.dat");
+    ret.Deserialize(output.c_str());
 }
 
 void HandleDirectory(const SDirectory* directory)
 {
-    std::string decryptPath = CStringHelper::GetInstance()->ReplaceString(directory->m_szPath, "Origin", "Decrypt");
-    std::string encryptPath = CStringHelper::GetInstance()->ReplaceString(directory->m_szPath, "Origin", "Encrypt");
+    std::string decryptPath = CStringHelper::GetInstance()->ReplaceString(directory->m_szPath, "PopGod", "Decrypt");
     CFilePathTool::GetInstance()->MakeDirectory(decryptPath.c_str());
-    CFilePathTool::GetInstance()->MakeDirectory(encryptPath.c_str());
     for (size_t i = 0; i < directory->m_pFileList->size(); ++i)
     {
         TFileData* pCurrFile = directory->m_pFileList->at(i);
@@ -897,7 +922,7 @@ void HandleDirectory(const SDirectory* directory)
         if (_tcsicmp(extension.c_str(), ".tx2") == 0)
         {
             CSerializer tx2File(filePath.c_str());
-            std::string decryptPath = CStringHelper::GetInstance()->ReplaceString(filePath, "Origin", "Decrypt");
+            std::string decryptPath = CStringHelper::GetInstance()->ReplaceString(filePath, "PopGod", "Decrypt");
             decryptPath.append(".bmp");
             ConvertTx2FileToBmp(tx2File, decryptPath);
         }
@@ -1089,29 +1114,85 @@ void ExtractWholeProject(const std::string& strProjectPath)
 
 int _tmain(int argc, _TCHAR* argv[])
 {
-    LoadCodeMapData("D:/PSP_crack/psp/Shift_JIS.txt");
-    std::string storyDataPath = "D:/PSP_crack/psp/Decrypt/PSP_GAME/USRDIR/start.dat_dir";
-    ExtractStartData("D:/PSP_crack/psp/Origin/PSP_GAME/USRDIR/start.dat", storyDataPath);
-    std::string storyFile = storyDataPath + ("/story.dat");
-    ExtractStoryData(storyFile.c_str());
-    PackStartData("D:/PSP_crack/psp/Origin/PSP_GAME/USRDIR/start.dat", "D:/PSP_crack/psp/Decrypt/PSP_GAME/USRDIR/start.dat_dir");
-    PackStartData("D:/PSP_crack/psp/Origin/PSP_GAME/USRDIR/start.dat", "D:/PSP_crack/psp/Decrypt/PSP_GAME/USRDIR/start.dat_dir");
+    printf("                    流行之神1汉化破解程序\n\n\
+请将ISO镜像解压到命名为\"PopGod\"的文件夹，并运行本程序于同级目录\n\
+请将码表命名为\"CodeMap.txt\"，并放置于本程序运行目录\n\
+0. 输入0开始解压整个项目\n\
+1. 输入1开始解压start.dat\n\
+2. 输入2开始转换story.dat为story.txt\n\
+3. 输入3开始还原start.dat\n");
+    int a = getchar();
+    TCHAR szBuffer[MAX_PATH];
+    GetCurrentDirectory(MAX_PATH, szBuffer);
+    //TString strRootPath = szBuffer;
+    strRootPath = "D:/PSP_crack/psp/PopGod";
+    bool bFindDirectory = CFilePathTool::GetInstance()->IsDirectory(strRootPath.c_str());
+    if (bFindDirectory)
+    {
+        switch (a)
+        {
+        case '0':
+        {
+                    TString strWorkPath = strRootPath;
+                    ExtractWholeProject(strRootPath.c_str());
+                    printf("解包完成，按任意键退出\n");
+                    system("pause");
+        }
+            break;
+        case '1':
+        {
+                    TString strStartDataPath = strRootPath + "/PSP_GAME/USRDIR/start.dat";
+                    TString strDecryptPath = CStringHelper::GetInstance()->ReplaceString(strStartDataPath, "PopGod", "Decrypt");
+                    strDecryptPath.append("_dir/");
+                    ExtractStartData(strStartDataPath.c_str(), strDecryptPath.c_str());
+                    printf("已解压到%s\n按任意键退出\n", strDecryptPath.c_str());
+                    system("pause");
+        }
+            break;
+        case '2':
+        {
+                    TString strCodeMapFilePath = CFilePathTool::GetInstance()->ParentPath(strRootPath.c_str());
+                    strCodeMapFilePath.append("/CodeMap.txt");
+                    LoadCodeMapData(strCodeMapFilePath.c_str());
+                    TString storyFile = CStringHelper::GetInstance()->ReplaceString(strRootPath, "PopGod", "Decrypt");
+                    storyFile.append("/PSP_GAME/USRDIR/start.dat_dir/story.dat");
+                      ExtractStoryData(storyFile.c_str());
+                      printf("已解压%s为story.txt\n按任意键退出\n", storyFile.c_str());
+                      system("pause");
+        }
+            break;
+        case '3':
+        {
+                    TString strCodeMapFilePath = CFilePathTool::GetInstance()->ParentPath(strRootPath.c_str());
+                    strCodeMapFilePath.append("/CodeMap.txt");
+                    LoadCodeMapData(strCodeMapFilePath.c_str());
+                    TString storyFile = CStringHelper::GetInstance()->ReplaceString(strRootPath, "PopGod", "Decrypt");
+                    storyFile.append("/PSP_GAME/USRDIR/start.dat_dir/story.dat");
+                    PackStoryData(storyFile.c_str());
+                    TString strStartFilePath = strRootPath;
+                    strStartFilePath.append("/PSP_GAME/USRDIR/start.dat");
+                    PackStartData(strStartFilePath.c_str());
+                    TString output = CFilePathTool::GetInstance()->ParentPath(strRootPath.c_str());
+                    output.append("/newstart.dat");
+                    printf("已经打包为%s\n按任意键退出", output.c_str());
+                    system("pause");
+        }
+            break;
+        default:
+            break;
+        }
+    }
+    else
+    {
+        _stprintf(szBuffer, "未发现文件夹%s\n按任意键退出\n", strRootPath.c_str());
+        printf("szBuffer");
+        system("pause");
+    }
     return 0;
     fd = iconv_open("", "SHIFT_JIS");
     packfd = iconv_open("SHIFT_JIS", "");
     if (fd != (iconv_t)0xFFFFFFFF && packfd != (iconv_t)0xFFFFFFFF)
     {
-        ExtractStartData("D:/PSP_crack/psp/Origin/PSP_GAME/USRDIR/start.dat",
-            "D:/PSP_crack/psp/Decrypt/PSP_GAME/USRDIR/start.dat_dir");
-        //PackStartData("D:/PSP_crack/psp/Origin/PSP_GAME/USRDIR/start.dat", "D:/PSP_crack/psp/Decrypt/PSP_GAME/USRDIR/start.dat_dir");
-
-        return 0;
-        TCHAR szBuffer[MAX_PATH];
-        GetCurrentDirectory(MAX_PATH, szBuffer);
-        ExtractWholeProject(strOriginPath);
-        printf("解包完成。");
-        system("pause");
-
     //    std::map<uint32_t, STranslateRecord> recordMap;
     //    ParseTextFile(fd, "../Resource/SourceFile/bootdata.txt", recordMap);
     //    CSerializer bootDataFile("../Resource/SourceFile/boot.bin", "rb+");
