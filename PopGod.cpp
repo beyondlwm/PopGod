@@ -3,17 +3,19 @@
 #include "StringHelper.h"
 #include "UtilityManager.h"
 #include "FilePathTool.h"
-#include "iconv.h"
 #include <algorithm>
 #include <shlwapi.h>
 #include <direct.h>
 #include "ControlCode.h"
-
+//#define ENABLE_ICONV
+#ifdef ENABLE_ICONV
+#include "iconv.h"
+iconv_t fd = 0;
+iconv_t packfd = 0;
+#endif
 uint32_t uTotalFileCount = 0;
 uint32_t uHandledFileCount = 0;
 uint32_t uProcessProgress = 0;
-iconv_t fd = 0;
-iconv_t packfd = 0;
 HWND BEYONDENGINE_HWND = nullptr;
 TString strRootPath;
 std::vector<TString> g_registeredSingleton;
@@ -104,7 +106,7 @@ std::string FilterControlCharacter(const std::string& strOri)
     return ret;
 }
 
-void ConvertBufferToString(iconv_t fd, CSerializer& serializerData, TString& strOut)
+void ConvertBufferToString(CSerializer& serializerData, TString& strOut)
 {
     while (serializerData.GetReadPos() < serializerData.GetWritePos() )
     {
@@ -206,7 +208,7 @@ void ConvertBufferToString(iconv_t fd, CSerializer& serializerData, TString& str
         }
     }
 }
-
+#ifdef ENABLE_ICONV
 void ConvertString(iconv_t fd, const std::string& rawString, std::string& output, bool bWriteControlCode = false)
 {
     const unsigned char* pData = (const unsigned char*)rawString.c_str();
@@ -353,7 +355,7 @@ void ParseTextFile(iconv_t fd, const std::string& strFilePath, std::map<uint32_t
         BEATS_PRINT("%p from %s to %s\n", pNewRecord->m_uAddress, pNewRecord->m_strOriginStr.c_str(), pNewRecord->m_strProcessedStr.c_str());
     }
 }
-
+#endif
 void DecryptPalette(CSerializer& serializer, CSerializer& out)
 {
     uint32_t uOriginOutWritePos = out.GetWritePos();
@@ -784,7 +786,7 @@ void ExtractStoryData(const char* pszStoryDataFile)
                 CSerializer inputData;
                 storyFile.Deserialize(inputData);
                 std::string outStr;
-                ConvertBufferToString(fd, inputData, outStr);
+                ConvertBufferToString(inputData, outStr);
                 TCHAR szLocBuffer[1024];
                 _stprintf(szLocBuffer, "0x%p %s", uStartPos, outStr.c_str());
                 text << szLocBuffer;
@@ -800,7 +802,7 @@ void ExtractStoryData(const char* pszStoryDataFile)
             CSerializer inputData;
             inputData.Serialize(storyFile.GetBuffer() + uStartPos, uEndPos - uStartPos);
             std::string outStr;
-            ConvertBufferToString(fd, inputData, outStr);
+            ConvertBufferToString(inputData, outStr);
             TCHAR szLocBuffer[1024];
             _stprintf(szLocBuffer, "0x%p %s\n", uStartPos, outStr.c_str());
             text << szLocBuffer;
@@ -1018,8 +1020,10 @@ void HandleDirectory(const SDirectory* directory)
                         strChapterInfo[i] = ~strChapterInfo[i];
                     }
                     std::string strTitle2, strChapterInfo2;
+#ifdef ENABLE_ICONV
                     ConvertString(fd, strTitle, strTitle2);
                     ConvertString(fd, strChapterInfo, strChapterInfo2);
+#endif
                     BEATS_PRINT("%s %s\n", strTitle2.c_str(), strChapterInfo2.c_str());
                     while (uLength > 0)
                     {
@@ -1124,8 +1128,8 @@ int _tmain(int argc, _TCHAR* argv[])
     int a = getchar();
     TCHAR szBuffer[MAX_PATH];
     GetCurrentDirectory(MAX_PATH, szBuffer);
-    //TString strRootPath = szBuffer;
-    strRootPath = "D:/PSP_crack/psp/PopGod";
+    strRootPath = szBuffer;
+    strRootPath.append("/PopGod");
     bool bFindDirectory = CFilePathTool::GetInstance()->IsDirectory(strRootPath.c_str());
     if (bFindDirectory)
     {
@@ -1184,11 +1188,12 @@ int _tmain(int argc, _TCHAR* argv[])
     }
     else
     {
-        _stprintf(szBuffer, "未发现文件夹%s\n按任意键退出\n", strRootPath.c_str());
-        printf("szBuffer");
+        _stprintf(szBuffer, "未发现文件夹%s 或者 CodeMap.txt\n按任意键退出\n", strRootPath.c_str());
+        printf(szBuffer);
         system("pause");
     }
     return 0;
+#ifdef ENABLE_ICONV
     fd = iconv_open("", "SHIFT_JIS");
     packfd = iconv_open("SHIFT_JIS", "");
     if (fd != (iconv_t)0xFFFFFFFF && packfd != (iconv_t)0xFFFFFFFF)
@@ -1239,6 +1244,7 @@ int _tmain(int argc, _TCHAR* argv[])
         //startDataFile.Deserialize("../Resource/SourceFile/start_hack.DAT", "wb+");
         iconv_close(fd);
     }
+#endif
     return 0;
 }
 
